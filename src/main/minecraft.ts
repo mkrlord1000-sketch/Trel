@@ -5,17 +5,21 @@ import { launch, LaunchOption } from '@xmcl/core';
 import { VersionInfo, LaunchOptions } from '../shared/types';
 import { JavaService } from './java';
 import { MinecraftInstaller } from './installer';
+import { LoaderService, LoaderType, LoaderVersion } from './loaders';
 
 export class MinecraftService {
   private installer: MinecraftInstaller;
+  public loaders: LoaderService;
 
   constructor(private gameDir: string, private java: JavaService) {
     this.installer = new MinecraftInstaller(gameDir);
+    this.loaders = new LoaderService(gameDir, java, this.installer);
   }
 
   setGameDir(dir: string) {
     this.gameDir = dir;
     this.installer.setGameDir(dir);
+    this.loaders.setGameDir(dir);
   }
 
   async fetchVersions(): Promise<VersionInfo[]> {
@@ -110,12 +114,47 @@ export class MinecraftService {
   }
 
   async launch(opts: LaunchOptions, win: BrowserWindow, userJavaPath?: string): Promise<number> {
-    // Ensure the version is installed (idempotent) and obtain resolved info
-    const ver = await this.install(opts.versionId, win);
-    const requiredMajor = ver.javaVersion?.majorVersion ?? 8;
+    const versionDir = path.join(this.gameDir, 'versions', opts.versionId);
+    const clientJar = path.join(versionDir, opts.versionId + '.jar');
+    const jsonPath = path.join(versionDir, opts.versionId + '.json');
+
+    let requiredMajor: number;
+    if (fs.existsSync(clientJar) && fs.existsSync(jsonPath)) {
+      // Версия уже установлена — НЕ перепроверяем все файлы, только читаем требуемую Java
+      try {
+        const json = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+        requiredMajor = json.javaVersion?.majorVersion;
+        if (!requiredMajor && json.inheritsFrom) {
+          // Гибридные (Fabric/Forge) — берём из родителя
+          const parentJson = path.join(this.gameDir, 'versions', json.inheritsFrom, json.inheritsFrom + '.json');
+          if (fs.existsSync(parentJson)) {
+            const pj = JSON.parse(fs.readFileSync(parentJson, 'utf-8'));
+            requiredMajor = pj.javaVersion?.majorVersion;
+          }
+        }
+        requiredMajor = requiredMajor ?? 8;
+      } catch {
+        requiredMajor = 8;
+      }
+    } else {
+      // Не установлено — ставим
+      const ver = await this.install(opts.versionId, win);
+      requiredMajor = ver.javaVersion?.majorVersion ?? 8;
+    }
 
     const { path: javaPath, reason } = await this.resolveJava(requiredMajor, userJavaPath, win);
     win.webContents.send('minecraft:log', `[launcher] Using Java: ${javaPath} (${reason})\n`);
+
+    // Старые версии (rd-*, c0.*, in-*, inf-*, alpha) игнорируют gamePath и
+    // пишут мир в зависимости от ОС:
+    //   Win   -> %APPDATA%\.minecraft   (System.getenv("APPDATA"))
+    //   Mac   -> ~/Library/Application Support/minecraft
+    //   Linux -> ~/.minecraft           (System.getProperty("user.home"))
+    // Подменяем переменные окружения чтобы каждый случай попадал в наш gameDir.
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    childEnv.APPDATA = this.gameDir;
+    childEnv.HOME = this.gameDir;
+    childEnv.USERPROFILE = this.gameDir;
 
     const launchOption: LaunchOption = {
       version: opts.versionId,
@@ -132,6 +171,16 @@ export class MinecraftService {
       launcherBrand: 'Aurora',
       minMemory: Math.floor(opts.memoryMb / 2),
       maxMemory: opts.memoryMb,
+      // JVM-флаги: дублируем path overrides на случай если Java читает их из properties
+      extraJVMArgs: [
+        `-Duser.home=${this.gameDir}`,
+        `-Duser.dir=${this.gameDir}`,
+      ],
+      // Главное: подменяем переменные окружения, которые читают legacy-версии
+      extraExecOption: {
+        env: childEnv,
+        cwd: this.gameDir,
+      },
     };
 
     const proc = await launch(launchOption);

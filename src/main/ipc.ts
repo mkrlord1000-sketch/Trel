@@ -5,6 +5,7 @@ import { AuthService } from './auth';
 import { SettingsStore } from './settings';
 import { JavaService } from './java';
 import { WorldService } from './worlds';
+import { ResetService } from './reset';
 import { LauncherUpdater } from './updater';
 import { LaunchOptions, LauncherSettings } from '../shared/types';
 
@@ -14,6 +15,7 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
   const java = new JavaService(launcherDir);
   const mc = new MinecraftService(settings.gameDir, java);
   const worlds = new WorldService(settings.gameDir);
+  const resetSvc = new ResetService(launcherDir, settings.gameDir);
   const auth = new AuthService();
 
   ipcMain.handle('settings:get', () => store.loadSettings());
@@ -21,6 +23,7 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
     store.saveSettings(s);
     mc.setGameDir(s.gameDir);
     worlds.setGameDir(s.gameDir);
+    resetSvc.setGameDir(s.gameDir);
     return s;
   });
   ipcMain.handle('settings:pickDir', async () => {
@@ -105,11 +108,37 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
   ipcMain.handle('worlds:list', () => worlds.list());
   ipcMain.handle('worlds:icon', (_e, name: string) => worlds.iconDataUrl(name));
   ipcMain.handle('worlds:delete', (_e, name: string) => worlds.delete(name));
+  ipcMain.handle('worlds:deleteWithBackups', (_e, name: string) => worlds.deleteWithBackups(name));
   ipcMain.handle('worlds:backup', (_e, name: string) => worlds.backup(name));
   ipcMain.handle('worlds:openFolder', (_e, name?: string) => {
     const p = name ? require('node:path').join(worlds.savesDir(), name) : worlds.savesDir();
     shell.openPath(p);
     return p;
+  });
+
+  // ---- launcher reset ----
+  ipcMain.handle('reset:perform', (_e, opts: { keepUserData: boolean }) => {
+    const result = resetSvc.perform(opts);
+    setTimeout(() => resetSvc.restart(), 300);
+    return result;
+  });
+
+  // ---- launcher uninstall ----
+  ipcMain.handle('reset:uninstallLauncher', (_e, keepUserData: boolean) => {
+    return resetSvc.uninstallLauncher({ keepUserData });
+  });
+
+  // ---- mod loaders ----
+  ipcMain.handle('loaders:list', (_e, loader: 'fabric' | 'quilt' | 'neoforge' | 'forge', mcVersion: string) => {
+    return mc.loaders.listVersions(loader, mcVersion);
+  });
+  ipcMain.handle('loaders:install', async (
+    _e,
+    loader: 'fabric' | 'quilt' | 'neoforge' | 'forge',
+    mcVersion: string,
+    loaderVersion: string,
+  ) => {
+    return mc.loaders.install(loader, mcVersion, loaderVersion, win);
   });
 
   // ---- launcher updater ----

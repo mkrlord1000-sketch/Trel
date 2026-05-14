@@ -41,6 +41,15 @@ export interface UpdaterState {
   error?: string;
 }
 
+export type LoaderType = 'fabric' | 'quilt' | 'neoforge' | 'forge';
+
+export interface LoaderVersionInfo {
+  loader: LoaderType;
+  version: string;
+  stable?: boolean;
+  mcVersion?: string;
+}
+
 const api = {
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
@@ -66,8 +75,26 @@ const api = {
     list: (): Promise<WorldEntry[]> => ipcRenderer.invoke('worlds:list'),
     icon: (name: string): Promise<string | null> => ipcRenderer.invoke('worlds:icon', name),
     delete: (name: string): Promise<boolean> => ipcRenderer.invoke('worlds:delete', name),
+    deleteWithBackups: (name: string): Promise<{ world: boolean; backupsRemoved: number }> =>
+      ipcRenderer.invoke('worlds:deleteWithBackups', name),
     backup: (name: string): Promise<string> => ipcRenderer.invoke('worlds:backup', name),
     openFolder: (name?: string): Promise<string> => ipcRenderer.invoke('worlds:openFolder', name),
+  },
+  reset: {
+    perform: (opts: { keepUserData: boolean }): Promise<{ removed: string[]; keptUserData: boolean }> =>
+      ipcRenderer.invoke('reset:perform', opts),
+    uninstallLauncher: (keepUserData: boolean): Promise<{ ok: boolean; reason?: string }> =>
+      ipcRenderer.invoke('reset:uninstallLauncher', keepUserData),
+  },
+  loaders: {
+    list: (loader: 'fabric' | 'quilt' | 'neoforge' | 'forge', mcVersion: string): Promise<LoaderVersionInfo[]> =>
+      ipcRenderer.invoke('loaders:list', loader, mcVersion),
+    install: (
+      loader: 'fabric' | 'quilt' | 'neoforge' | 'forge',
+      mcVersion: string,
+      loaderVersion: string,
+    ): Promise<{ versionId: string }> =>
+      ipcRenderer.invoke('loaders:install', loader, mcVersion, loaderVersion),
   },
   updater: {
     state: (): Promise<UpdaterState> => ipcRenderer.invoke('updater:state'),

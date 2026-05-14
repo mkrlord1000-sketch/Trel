@@ -16,31 +16,25 @@ interface Props {
   onSettingsChange: (s: LauncherSettings) => void;
 }
 
-type Filter = 'all' | 'release' | 'snapshot' | 'old_beta' | 'old_alpha' | 'installed';
+type Filter = 'all' | 'release' | 'snapshot' | 'old_beta' | 'old_alpha';
 
 const typeLabel: Record<string, string> = {
-  release: 'релиз',
-  snapshot: 'снапшот',
-  old_beta: 'beta',
-  old_alpha: 'alpha',
+  release: 'релиз', snapshot: 'снапшот', old_beta: 'beta', old_alpha: 'alpha',
 };
 
-export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts, onSettingsChange }) => {
+export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts, onSettingsChange }) => {
   const dialog = useDialog();
   const [versions, setVersions] = useState<VersionInfo[]>([]);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<string>(settings.lastVersionId || '');
+  const [selected, setSelected] = useState<string>('');
   const [filter, setFilter] = useState<Filter>('release');
   const [query, setQuery] = useState('');
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
-  const [status, setStatus] = useState<string>('');
+  const [status, setStatus] = useState('');
   const [statusType, setStatusType] = useState<'neutral' | 'success' | 'error'>('neutral');
   const [busy, setBusy] = useState(false);
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const [showLog, setShowLog] = useState(false);
   const [javaPlan, setJavaPlan] = useState<JavaPlan | null>(null);
   const [loaderDialogOpen, setLoaderDialogOpen] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
 
   const refreshInstalled = async () => {
     const list = await window.api.minecraft.installed();
@@ -54,30 +48,18 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
         const first = list.find((v) => v.type === 'release') || list[0];
         setSelected(first.id);
       }
-    }).catch((e) => {
-      setStatus('Не удалось загрузить список версий: ' + (e as Error).message);
-      setStatusType('error');
     });
     refreshInstalled();
 
     const offProgress = window.api.minecraft.onProgress(setProgress);
-    const offLog = window.api.minecraft.onLog((line) => {
-      setLogLines((prev) => [...prev.slice(-500), line]);
-    });
     const offExit = window.api.minecraft.onExit((code) => {
       setStatus(`Игра завершилась (код ${code})`);
       setStatusType(code === 0 ? 'success' : 'error');
       setBusy(false);
     });
-    const offManifest = window.api.minecraft.onManifestUpdated((list) => {
-      setVersions(list);
-    });
-    return () => { offProgress(); offLog(); offExit(); offManifest(); };
+    const offManifest = window.api.minecraft.onManifestUpdated((list) => setVersions(list));
+    return () => { offProgress(); offExit(); offManifest(); };
   }, []);
-
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logLines.length]);
 
   useEffect(() => {
     if (!selected) { setJavaPlan(null); return; }
@@ -91,27 +73,23 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
     return versions.filter((v) => {
       if (query && !v.id.toLowerCase().includes(query.toLowerCase())) return false;
       if (filter === 'all') return true;
-      if (filter === 'installed') return installed.has(v.id);
       return v.type === filter;
     });
-  }, [versions, query, filter, installed]);
+  }, [versions, query, filter]);
 
-  const selectedVersion = versions.find(v => v.id === selected);
+  const selectedVersion = versions.find((v) => v.id === selected);
   const isInstalled = !!(selected && installed.has(selected));
-  const isLast = !!(selected && selected === settings.lastVersionId);
   const canAct = !!account && !!selected && !busy;
 
   const counts = useMemo(() => {
-    const c = { all: versions.length, release: 0, snapshot: 0, old_beta: 0, old_alpha: 0, installed: installed.size };
+    const c = { all: versions.length, release: 0, snapshot: 0, old_beta: 0, old_alpha: 0 };
     for (const v of versions) (c as any)[v.type]++;
     return c;
-  }, [versions, installed]);
+  }, [versions]);
 
-  const onPlayOrDownload = async () => {
+  const onInstallAndPlay = async () => {
     if (!account || !selected) return;
     setBusy(true);
-    setLogLines([]);
-    setShowLog(false);
     setStatusType('neutral');
     try {
       if (!isInstalled) {
@@ -121,18 +99,13 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
         setStatus('Установлено: ' + selected);
         setStatusType('success');
         setBusy(false);
+        onSettingsChange({ ...settings, lastVersionId: selected });
         return;
       }
-      setStatus('Подготовка...');
-      await window.api.minecraft.install(selected);
-      await refreshInstalled();
+      // Уже установлено — сразу запуск
       setStatus('Запуск Minecraft');
       onSettingsChange({ ...settings, lastVersionId: selected });
-      await window.api.minecraft.launch({
-        versionId: selected,
-        account,
-        memoryMb: settings.memoryMb,
-      });
+      await window.api.minecraft.launch({ versionId: selected, account, memoryMb: settings.memoryMb });
       setStatus('Minecraft запущен');
       setStatusType('success');
     } catch (e) {
@@ -160,103 +133,26 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
     }
   };
 
-  const onUninstall = async () => {
-    if (!selected) return;
-    const choice = await dialog.show({
-      title: `Удалить версию ${selected}?`,
-      tone: 'danger',
-      message: (
-        <>
-          <b>Полностью</b> — папка версии и (если это последняя) общие <code>libraries</code> и <code>assets</code>.
-          <br />
-          <b>Только версию</b> — удалится только её папка, ассеты останутся.
-          <br />
-          Сохранения в общей папке <code>saves</code> не трогаются.
-        </>
-      ),
-      buttons: [
-        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
-        { label: 'Только версию', value: 'shallow', variant: 'default' },
-        { label: 'Полностью', value: 'deep', variant: 'danger' },
-      ],
-      defaultIndex: 0,
-      cancelValue: 'cancel',
-    });
-    if (choice === 'cancel') return;
-    if (choice === 'deep') {
-      await window.api.minecraft.uninstallDeep(selected);
-      setStatus('Глубоко удалено: ' + selected);
-    } else {
-      const ok = await window.api.minecraft.uninstall(selected);
-      if (!ok) return;
-      setStatus('Удалено: ' + selected);
-    }
-    setStatusType('success');
-    await refreshInstalled();
-  };
-
-  const onUninstallById = async (id: string) => {
-    const choice = await dialog.show({
-      title: `Удалить версию ${id}?`,
-      tone: 'danger',
-      message: 'Файлы версии будут удалены с диска.',
-      buttons: [
-        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
-        { label: 'Удалить', value: 'ok', variant: 'danger' },
-      ],
-      defaultIndex: 0,
-      cancelValue: 'cancel',
-    });
-    if (choice !== 'ok') return;
-    const ok = await window.api.minecraft.uninstall(id);
-    if (ok) {
-      await refreshInstalled();
-      setStatus('Удалено: ' + id);
-      setStatusType('success');
-    }
-  };
-
-  const onUninstallAll = async () => {
-    const ids = [...installed];
-    if (ids.length === 0) return;
-    const choice = await dialog.show({
-      title: `Удалить все установленные версии (${ids.length})?`,
-      tone: 'danger',
-      message: 'Все файлы версий будут удалены с диска. Сохранения и аккаунты затронуты не будут.',
-      buttons: [
-        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
-        { label: 'Удалить все', value: 'ok', variant: 'danger' },
-      ],
-      defaultIndex: 0,
-      cancelValue: 'cancel',
-    });
-    if (choice !== 'ok') return;
-    for (const id of ids) {
-      try { await window.api.minecraft.uninstall(id); } catch {}
-    }
-    await refreshInstalled();
-    setStatus(`Удалено: ${ids.length} версий`);
-    setStatusType('success');
-  };
+  const filterTabs: { id: Filter; label: string; accent: string; c: number }[] = [
+    { id: 'release',   label: 'Релизы',   accent: 'release',   c: counts.release },
+    { id: 'snapshot',  label: 'Снапшоты', accent: 'snapshot',  c: counts.snapshot },
+    { id: 'old_beta',  label: 'Beta',     accent: 'beta',      c: counts.old_beta },
+    { id: 'old_alpha', label: 'Alpha',    accent: 'alpha',     c: counts.old_alpha },
+    { id: 'all',       label: 'Все',      accent: 'all',       c: counts.all },
+  ];
 
   const playLabel = busy
     ? (isInstalled ? 'Запуск...' : 'Скачивание...')
-    : (isInstalled ? 'Играть' : 'Скачать');
-
-  const filterTabs: { id: Filter; label: string; accent: string; c: number }[] = [
-    { id: 'release',   label: 'Релизы',     accent: 'release',   c: counts.release },
-    { id: 'snapshot',  label: 'Снапшоты',   accent: 'snapshot',  c: counts.snapshot },
-    { id: 'installed', label: 'Установлено',accent: 'installed', c: counts.installed },
-    { id: 'old_beta',  label: 'Beta',       accent: 'beta',      c: counts.old_beta },
-    { id: 'old_alpha', label: 'Alpha',      accent: 'alpha',     c: counts.old_alpha },
-    { id: 'all',       label: 'Все',        accent: 'all',       c: counts.all },
-  ];
+    : (isInstalled ? 'Играть' : 'Скачать и играть');
 
   return (
     <div className="lib-shell">
-      {/* MAIN AREA — LEFT: list + filters, RIGHT: details */}
+      <div className="page-head" style={{ flexShrink: 0, marginBottom: 14 }}>
+        <h1>Каталог версий</h1>
+        <p>Найдите и установите любую версию Minecraft</p>
+      </div>
+
       <div className="lib-main">
-        {/* LEFT pane */}
         <aside className="lib-left">
           <div className="lib-left-search">
             <IconSearch className="search-icon" />
@@ -281,15 +177,6 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
               </button>
             ))}
           </div>
-
-          {filter === 'installed' && installed.size > 0 && (
-            <div className="lib-installed-head">
-              <span className="muted" style={{ fontSize: 12 }}>{installed.size} установлено</span>
-              <button className="btn ghost sm" onClick={onUninstallAll}>
-                <IconTrash /> Все
-              </button>
-            </div>
-          )}
 
           <div className="lib-scroll">
             {filtered.length === 0 ? (
@@ -319,15 +206,6 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
                       </div>
                     </div>
                     <span className={'tag ' + v.type}>{typeLabel[v.type] ?? v.type}</span>
-                    {isInst && (
-                      <button
-                        className="icon-btn row-delete"
-                        onClick={(e) => { e.stopPropagation(); onUninstallById(v.id); }}
-                        title={`Удалить ${v.id}`}
-                      >
-                        <IconTrash />
-                      </button>
-                    )}
                   </div>
                 );
               })
@@ -335,7 +213,6 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
           </div>
         </aside>
 
-        {/* RIGHT pane — details */}
         <section className="lib-right">
           {!account && (
             <div className="banner">
@@ -347,37 +224,28 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
             </div>
           )}
 
-          {/* Header card with version name + chips */}
           <div className="detail-head">
             <div className="detail-eyebrow">
-              {isInstalled ? 'Готово к игре' : 'Не установлено'}
-              {isLast && <span className="pill">последняя</span>}
+              {isInstalled ? 'Установлено' : 'Не установлено'}
             </div>
             <div className="detail-title">{selected || '—'}</div>
             <div className="detail-meta">
               {selectedVersion && (
                 <>
                   <span className={'tag ' + selectedVersion.type}>{typeLabel[selectedVersion.type] ?? selectedVersion.type}</span>
-                  <span className="chip">
-                    {new Date(selectedVersion.releaseTime).toLocaleDateString('ru-RU')}
-                  </span>
+                  <span className="chip">{new Date(selectedVersion.releaseTime).toLocaleDateString('ru-RU')}</span>
                   {javaPlan && !javaPlan.error && (
                     <span className={'chip ' + (javaPlan.plan === 'download' ? 'warn' : 'accent')}>
                       Java {javaPlan.required}
                       {javaPlan.plan === 'reuse' && <> · найдена</>}
                       {javaPlan.plan === 'download' && <> · скачается</>}
-                      {javaPlan.plan === 'user' && <> · своя</>}
                     </span>
                   )}
-                  <span className={'chip ' + (isInstalled ? 'success' : '')}>
-                    {isInstalled ? <><IconCheck /> установлено</> : 'не установлено'}
-                  </span>
                 </>
               )}
             </div>
           </div>
 
-          {/* Description */}
           {selectedVersion && describeVersion(selectedVersion) && (
             <div className="about-card">
               <div className="about-head">
@@ -387,29 +255,9 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
               <p className="about-text">{describeVersion(selectedVersion)}</p>
             </div>
           )}
-
-          {/* Log card */}
-          {logLines.length > 0 && (
-            <div className="card" style={{ margin: 0 }}>
-              <div className="card-head">
-                <div className="row" style={{ gap: 8 }}>
-                  <h2>Лог игры</h2>
-                  <span className="chip">{logLines.length} строк</span>
-                </div>
-                <div className="row" style={{ gap: 4 }}>
-                  <button className="btn ghost sm" onClick={() => setShowLog((v) => !v)}>
-                    {showLog ? 'Скрыть' : 'Показать'}
-                  </button>
-                  <button className="btn ghost sm" onClick={() => setLogLines([])}>Очистить</button>
-                </div>
-              </div>
-              {showLog && <div className="log" ref={logRef}>{logLines.join('')}</div>}
-            </div>
-          )}
         </section>
       </div>
 
-      {/* STICKY ACTION BAR */}
       <div className="lib-actionbar">
         <div className="lib-actionbar-status">
           {(busy && progress) ? (
@@ -440,38 +288,31 @@ export const LibraryPage: React.FC<Props> = ({ settings, account, onGoToAccounts
             className="icon-btn"
             disabled={!selected || busy || !/^1\.\d+(\.\d+)?$/.test(selected)}
             onClick={() => setLoaderDialogOpen(true)}
-            title="Установить мод-загрузчик (Fabric, Forge, NeoForge, Quilt)"
+            title="Установить мод-загрузчик"
           >
             <IconCube />
           </button>
-          <button
-            className="icon-btn"
-            disabled={!selected || busy || isInstalled}
-            onClick={onInstallOnly}
-            title="Только скачать"
-          >
-            <IconRefresh />
-          </button>
-          <button
-            className="icon-btn"
-            disabled={!selected}
-            onClick={() => selected && window.api.minecraft.openFolder('version', selected)}
-            title="Открыть папку версии"
-          >
-            <IconFolder />
-          </button>
-          {isInstalled && (
+          {!isInstalled && (
             <button
               className="icon-btn"
               disabled={!selected || busy}
-              onClick={onUninstall}
-              title="Удалить"
+              onClick={onInstallOnly}
+              title="Только скачать"
             >
-              <IconTrash />
+              <IconRefresh />
             </button>
           )}
-
-          <button className="play-btn" disabled={!canAct} onClick={onPlayOrDownload}>
+          {isInstalled && (
+            <button
+              className="icon-btn"
+              disabled={!selected}
+              onClick={() => selected && window.api.minecraft.openFolder('version', selected)}
+              title="Открыть папку"
+            >
+              <IconFolder />
+            </button>
+          )}
+          <button className="play-btn" disabled={!canAct} onClick={onInstallAndPlay}>
             {busy && progress && (
               <span className="progress-fill" style={{ width: progress.percent + '%' }} />
             )}

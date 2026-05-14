@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { LauncherSettings } from '../../shared/types';
 import type { JavaInstallInfo, UpdaterState } from '../../preload/preload';
-import { IconRefresh, IconFolder, IconCheck } from '../components/icons';
+import { IconRefresh, IconFolder, IconCheck, IconAlert, IconTrash } from '../components/icons';
+import { useDialog } from '../components/Dialog';
 
 interface Props {
   settings: LauncherSettings;
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export const SettingsPage: React.FC<Props> = ({ settings, onChange }) => {
+  const dlg = useDialog();
   const [local, setLocal] = useState<LauncherSettings>(settings);
   const [javaList, setJavaList] = useState<JavaInstallInfo[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -56,6 +58,108 @@ export const SettingsPage: React.FC<Props> = ({ settings, onChange }) => {
       case 'error': return 'Ошибка: ' + (s.error ?? 'неизвестно');
       case 'disabled': return 'Автообновление отключено (dev-режим)';
       default: return '—';
+    }
+  };
+
+  const onResetLauncher = async () => {
+    // Step 1: choice between cleanup options
+    const step1 = await dlg.show({
+      title: 'Сбросить лаунчер?',
+      tone: 'danger',
+      message: (
+        <>
+          Будут удалены: скачанные версии Minecraft, библиотеки, ассеты, кеш Java.
+          <br />
+          Можно дополнительно удалить личные данные (миры, аккаунты, настройки).
+        </>
+      ),
+      buttons: [
+        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
+        { label: 'Сохранить мои данные', value: 'keep', variant: 'default' },
+        { label: 'Удалить всё полностью', value: 'wipe', variant: 'danger' },
+      ],
+      defaultIndex: 0,
+      cancelValue: 'cancel',
+    });
+    if (step1 === 'cancel') return;
+
+    // Step 2: final confirmation
+    const step2 = await dlg.show({
+      title: step1 === 'wipe' ? 'Точно удалить ВСЁ?' : 'Подтвердить сброс',
+      tone: 'danger',
+      message: step1 === 'wipe' ? (
+        <>
+          Это действие <b>необратимо</b>. Будут удалены все версии, миры, аккаунты, настройки.
+          <br />
+          Лаунчер перезапустится в начальном состоянии.
+        </>
+      ) : (
+        <>
+          Будут удалены кеш и скачанные версии. Личные данные (миры, аккаунты, настройки) <b>останутся</b>.
+          <br />
+          Лаунчер перезапустится.
+        </>
+      ),
+      buttons: [
+        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
+        { label: step1 === 'wipe' ? 'Удалить всё и перезапустить' : 'Сбросить и перезапустить',
+          value: 'go', variant: 'danger' },
+      ],
+      defaultIndex: 0,
+      cancelValue: 'cancel',
+    });
+    if (step2 !== 'go') return;
+
+    await window.api.reset.perform({ keepUserData: step1 === 'keep' });
+    // лаунчер перезапустится сам через resetSvc.restart()
+  };
+
+  const onUninstallLauncher = async () => {
+    const step1 = await dlg.show({
+      title: 'Удалить лаунчер с компьютера?',
+      tone: 'danger',
+      message: (
+        <>
+          Лаунчер будет полностью удалён через стандартный установщик Windows.
+          <br />
+          Можно сохранить личные данные (миры, аккаунты, настройки) или стереть всё подчистую.
+        </>
+      ),
+      buttons: [
+        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
+        { label: 'Сохранить мои данные', value: 'keep', variant: 'default' },
+        { label: 'Удалить всё полностью', value: 'wipe', variant: 'danger' },
+      ],
+      defaultIndex: 0,
+      cancelValue: 'cancel',
+    });
+    if (step1 === 'cancel') return;
+
+    const step2 = await dlg.show({
+      title: 'Подтвердить удаление',
+      tone: 'danger',
+      message: step1 === 'wipe'
+        ? 'Лаунчер и все данные будут удалены. Это действие необратимо.'
+        : 'Лаунчер будет удалён, личные данные останутся в %APPDATA%\\AuroraLauncher.',
+      buttons: [
+        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
+        { label: 'Удалить лаунчер', value: 'go', variant: 'danger' },
+      ],
+      defaultIndex: 0,
+      cancelValue: 'cancel',
+    });
+    if (step2 !== 'go') return;
+
+    const result = await window.api.reset.uninstallLauncher(step1 === 'keep');
+    if (!result.ok) {
+      await dlg.show({
+        title: 'Не удалось запустить uninstaller',
+        tone: 'warn',
+        message: result.reason || 'Удалите лаунчер вручную через «Параметры → Приложения».',
+        buttons: [{ label: 'Понятно', value: 'ok', variant: 'default' }],
+        defaultIndex: 0,
+        cancelValue: 'ok',
+      });
     }
   };
 
@@ -189,6 +293,35 @@ export const SettingsPage: React.FC<Props> = ({ settings, onChange }) => {
           <div className="hint">
             Несовместимые версии игнорируются автоматически — например, Java 21 для мира 1.16.
           </div>
+        </div>
+      </div>
+
+      <div className="card danger-zone">
+        <div className="card-head">
+          <h2>Опасная зона</h2>
+        </div>
+        <div className="row" style={{ justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 4 }}>Сброс лаунчера</div>
+            <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+              Удалит скачанные версии, библиотеки и кеш. Можно сохранить личные данные или стереть всё подчистую.
+            </div>
+          </div>
+          <button className="btn danger" onClick={onResetLauncher}>
+            <IconAlert /> Сбросить лаунчер
+          </button>
+        </div>
+
+        <div className="row" style={{ justifyContent: 'space-between', gap: 12, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 4 }}>Удалить лаунчер</div>
+            <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+              Запустит штатный uninstaller Windows. Можно сохранить миры и аккаунты или стереть всё.
+            </div>
+          </div>
+          <button className="btn danger" onClick={onUninstallLauncher}>
+            <IconTrash /> Удалить лаунчер
+          </button>
         </div>
       </div>
     </div>

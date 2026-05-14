@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import AdmZip from 'adm-zip';
 
 export interface WorldInfo {
@@ -102,35 +103,98 @@ export class WorldService {
   /** saves/ is shared for the vanilla game directory. */
   savesDir(): string { return path.join(this.gameDir, 'saves'); }
 
-  list(): WorldInfo[] {
-    const root = this.savesDir();
-    if (!fs.existsSync(root)) return [];
-    const out: WorldInfo[] = [];
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const dir = path.join(root, entry.name);
-      const levelDat = path.join(dir, 'level.dat');
-      if (!fs.existsSync(levelDat)) continue;
-
-      const parsed = parseLevelDat(levelDat);
-      out.push({
-        name: entry.name,
-        displayName: parsed.name || entry.name,
-        path: dir,
-        lastPlayed: parsed.lastPlayed || 0,
-        sizeBytes: dirSize(dir),
-        gameMode: parsed.gameMode,
-        hardcore: parsed.hardcore,
-        version: parsed.version,
-        hasIcon: fs.existsSync(path.join(dir, 'icon.png')),
-      });
+  /**
+   * Старые версии (rd-*, c0.*, alpha-classic) пишут миры в зависимости от ОС:
+   * Windows -> %APPDATA%\.minecraft (System.getenv("APPDATA"))
+   * Mac     -> ~/Library/Application Support/minecraft
+   * Linux   -> ~/.minecraft (user.home)
+   * Возвращаем все возможные расположения сохранений: gameDir/saves плюс
+   * исторические легаси-папки.
+   */
+  legacyRoots(): string[] {
+    const out = [
+      path.join(this.gameDir, 'saves'),
+      path.join(this.gameDir, '.minecraft', 'saves'),
+      path.join(this.gameDir, '.minecraft'),
+    ];
+    // Windows: APPDATA-based path is the real one for Classic/rd-* on Win
+    if (process.platform === 'win32' && process.env.APPDATA) {
+      out.push(path.join(process.env.APPDATA, '.minecraft'));
+      out.push(path.join(process.env.APPDATA, '.minecraft', 'saves'));
     }
+    // macOS-style legacy
+    if (process.platform === 'darwin') {
+      const home = os.homedir();
+      out.push(path.join(home, 'Library', 'Application Support', 'minecraft'));
+      out.push(path.join(home, 'Library', 'Application Support', 'minecraft', 'saves'));
+    }
+    // Linux-style fallback
+    const home = os.homedir();
+    if (home) {
+      out.push(path.join(home, '.minecraft'));
+      out.push(path.join(home, '.minecraft', 'saves'));
+    }
+    return out;
+  }
+
+  list(): WorldInfo[] {
+    const seen = new Set<string>();
+    const out: WorldInfo[] = [];
+
+    const scanRoot = (root: string, isLegacy: boolean) => {
+      if (!fs.existsSync(root)) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(root, { withFileTypes: true });
+      } catch { return; }
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const dir = path.join(root, entry.name);
+        // Avoid recursing into nested .minecraft accidentally
+        if (entry.name === '.minecraft') continue;
+
+        const levelDat = path.join(dir, 'level.dat');
+        if (!fs.existsSync(levelDat)) continue;
+
+        // Avoid duplicates by canonical path
+        const key = path.resolve(dir).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const parsed = parseLevelDat(levelDat);
+        out.push({
+          name: entry.name,
+          displayName: parsed.name || entry.name,
+          path: dir,
+          lastPlayed: parsed.lastPlayed || 0,
+          sizeBytes: dirSize(dir),
+          gameMode: parsed.gameMode,
+          hardcore: parsed.hardcore,
+          version: parsed.version,
+          hasIcon: fs.existsSync(path.join(dir, 'icon.png')),
+        });
+      }
+    };
+
+    for (const root of this.legacyRoots()) scanRoot(root, root !== this.savesDir());
     out.sort((a, b) => b.lastPlayed - a.lastPlayed);
     return out;
   }
 
+  /** Find absolute path of world by its folder name across all legacy roots. */
+  findWorldPath(worldName: string): string | null {
+    for (const root of this.legacyRoots()) {
+      const p = path.join(root, worldName);
+      if (fs.existsSync(path.join(p, 'level.dat'))) return p;
+    }
+    return null;
+  }
+
   iconDataUrl(worldName: string): string | null {
-    const p = path.join(this.savesDir(), worldName, 'icon.png');
+    const dir = this.findWorldPath(worldName);
+    if (!dir) return null;
+    const p = path.join(dir, 'icon.png');
     if (!fs.existsSync(p)) return null;
     try {
       const buf = fs.readFileSync(p);
@@ -141,16 +205,34 @@ export class WorldService {
   }
 
   delete(worldName: string): boolean {
-    const p = path.join(this.savesDir(), worldName);
-    if (!fs.existsSync(p)) return false;
-    fs.rmSync(p, { recursive: true, force: true });
+    const dir = this.findWorldPath(worldName);
+    if (!dir) return false;
+    fs.rmSync(dir, { recursive: true, force: true });
     return true;
   }
 
-  /** Zip the world folder to `<savesDir>/../backups/<worldName>-<timestamp>.zip` and return its path. */
+  /** Delete world AND all its existing zip backups in <gameDir>/backups/<worldName>-*.zip */
+  deleteWithBackups(worldName: string): { world: boolean; backupsRemoved: number } {
+    const worldDeleted = this.delete(worldName);
+    let backupsRemoved = 0;
+    const backupsDir = path.join(this.gameDir, 'backups');
+    if (fs.existsSync(backupsDir)) {
+      for (const file of fs.readdirSync(backupsDir)) {
+        if (file.startsWith(worldName + '-') && file.endsWith('.zip')) {
+          try {
+            fs.unlinkSync(path.join(backupsDir, file));
+            backupsRemoved++;
+          } catch {}
+        }
+      }
+    }
+    return { world: worldDeleted, backupsRemoved };
+  }
+
+  /** Zip the world folder to `<gameDir>/backups/<worldName>-<timestamp>.zip` and return its path. */
   backup(worldName: string): string {
-    const src = path.join(this.savesDir(), worldName);
-    if (!fs.existsSync(src)) throw new Error('World not found');
+    const src = this.findWorldPath(worldName);
+    if (!src) throw new Error('World not found');
     const backupsDir = path.join(this.gameDir, 'backups');
     fs.mkdirSync(backupsDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');

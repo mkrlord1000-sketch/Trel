@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { WorldEntry } from '../../preload/preload';
 import { IconFolder, IconTrash, IconRefresh, IconArchive } from '../components/icons';
+import { useDialog } from '../components/Dialog';
 
 const modeLabel = (m: number | undefined, hardcore: boolean | undefined) => {
   if (hardcore) return 'хардкор';
@@ -37,6 +38,7 @@ function fmtDate(ms: number): string {
 }
 
 export const WorldsPage: React.FC = () => {
+  const dialog = useDialog();
   const [list, setList] = useState<WorldEntry[]>([]);
   const [icons, setIcons] = useState<Record<string, string | null>>({});
   const [query, setQuery] = useState('');
@@ -65,12 +67,37 @@ export const WorldsPage: React.FC = () => {
   );
 
   const onDelete = async (w: WorldEntry) => {
-    if (!confirm(`Удалить мир «${w.displayName}»? Это действие необратимо.`)) return;
-    const ok = await window.api.worlds.delete(w.name);
-    if (ok) {
-      setStatus(`Мир «${w.displayName}» удалён`);
-      refresh();
+    const choice = await dialog.show({
+      title: `Удалить мир «${w.displayName}»?`,
+      tone: 'danger',
+      message: (
+        <>
+          Это действие необратимо.
+          <br />
+          <b>Удалить полностью</b> — стирает мир и все его .zip-бэкапы.
+          <br />
+          <b>Только мир</b> — мир удаляется, бэкапы в папке <code>backups</code> остаются.
+        </>
+      ),
+      buttons: [
+        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
+        { label: 'Только мир', value: 'world', variant: 'default' },
+        { label: 'Удалить полностью', value: 'all', variant: 'danger' },
+      ],
+      defaultIndex: 0,
+      cancelValue: 'cancel',
+    });
+
+    if (choice === 'cancel') return;
+
+    if (choice === 'all') {
+      const r = await window.api.worlds.deleteWithBackups(w.name);
+      setStatus(`«${w.displayName}» удалён${r.backupsRemoved ? `, бэкапов удалено: ${r.backupsRemoved}` : ''}`);
+    } else {
+      const ok = await window.api.worlds.delete(w.name);
+      if (ok) setStatus(`Мир «${w.displayName}» удалён (бэкапы сохранены)`);
     }
+    refresh();
   };
 
   const onBackup = async (w: WorldEntry) => {
