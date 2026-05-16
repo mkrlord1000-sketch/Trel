@@ -1,31 +1,31 @@
-name: release
+name: ci
 
+# Простой CI-чек: проверяем что проект собирается. Релизы публикуются
+# вручную через scripts/publish.ps1 — ничего автоматически на GitHub не
+# заливается, чтобы не ломать существующие release-артефакты.
 on:
   push:
     branches: [main]
     paths-ignore:
       - '**.md'
       - '.gitignore'
-      - '.github/**'
-      - '!.github/workflows/release.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: release
-  cancel-in-progress: false
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,34 +33,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Configure git
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Bump patch version if commit is not a release
-        shell: bash
-        run: |
-          LAST_MSG=$(git log -1 --pretty=%s)
-          if [[ "$LAST_MSG" == release* ]]; then
-            echo "Commit already a release, skipping bump"
-          else
-            npm version patch --no-git-tag-version -m "release %s"
-            VERSION=$(node -p "require('./package.json').version")
-            git add package.json package-lock.json
-            git commit -m "release $VERSION"
-            git tag "v$VERSION"
-            git push origin HEAD:main --follow-tags
-          fi
-
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run build
+      - name: Generate icon
+        run: npm run icon
 
-      - name: Publish
-        run: npx electron-builder --win --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build renderer + main
+        run: npm run build

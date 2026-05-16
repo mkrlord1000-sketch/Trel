@@ -7,7 +7,7 @@ export const TitleBar: React.FC = () => {
     <div className="titlebar">
       <div className="brand">
         <span className="brand-mark"><IconSpark /></span>
-        <span>Aurora</span>
+        <span>Trel</span>
       </div>
       <div className="spacer" />
       <UpdateIndicator />

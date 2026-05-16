@@ -62,6 +62,13 @@ export interface ContentItem {
   isFolder: boolean;
 }
 
+export interface InstalledVersionDetail {
+  id: string;
+  baseMc: string;
+  loader: LoaderType | null;
+  loaderVersion: string | null;
+}
+
 const api = {
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
@@ -109,16 +116,16 @@ const api = {
       ipcRenderer.invoke('loaders:install', loader, mcVersion, loaderVersion),
   },
   content: {
-    list: (kind: ContentKind): Promise<ContentItem[]> =>
-      ipcRenderer.invoke('content:list', kind),
-    delete: (kind: ContentKind, name: string): Promise<boolean> =>
-      ipcRenderer.invoke('content:delete', kind, name),
-    toggle: (kind: ContentKind, name: string): Promise<boolean> =>
-      ipcRenderer.invoke('content:toggle', kind, name),
-    openFolder: (kind: ContentKind): Promise<string> =>
-      ipcRenderer.invoke('content:openFolder', kind),
-    add: (kind: ContentKind): Promise<{ copied: number; errors: string[] }> =>
-      ipcRenderer.invoke('content:add', kind),
+    list: (kind: ContentKind, versionId?: string): Promise<ContentItem[]> =>
+      ipcRenderer.invoke('content:list', kind, versionId),
+    delete: (kind: ContentKind, name: string, versionId?: string): Promise<boolean> =>
+      ipcRenderer.invoke('content:delete', kind, name, versionId),
+    toggle: (kind: ContentKind, name: string, versionId?: string): Promise<boolean> =>
+      ipcRenderer.invoke('content:toggle', kind, name, versionId),
+    openFolder: (kind: ContentKind, versionId?: string): Promise<string> =>
+      ipcRenderer.invoke('content:openFolder', kind, versionId),
+    add: (kind: ContentKind, versionId?: string): Promise<{ copied: number; errors: string[] }> =>
+      ipcRenderer.invoke('content:add', kind, versionId),
   },
   updater: {
     state: (): Promise<UpdaterState> => ipcRenderer.invoke('updater:state'),
@@ -133,9 +140,12 @@ const api = {
   minecraft: {
     versions: (): Promise<VersionInfo[]> => ipcRenderer.invoke('minecraft:versions'),
     installed: (): Promise<string[]> => ipcRenderer.invoke('minecraft:installed'),
+    installedDetailed: (): Promise<InstalledVersionDetail[]> => ipcRenderer.invoke('minecraft:installedDetailed'),
     install: (versionId: string): Promise<boolean> => ipcRenderer.invoke('minecraft:install', versionId),
     uninstall: (versionId: string): Promise<boolean> => ipcRenderer.invoke('minecraft:uninstall', versionId),
     uninstallDeep: (versionId: string): Promise<{ removed: string[] }> => ipcRenderer.invoke('minecraft:uninstallDeep', versionId),
+    revertToVanilla: (baseMc: string): Promise<{ removed: string[] }> =>
+      ipcRenderer.invoke('minecraft:revertToVanilla', baseMc),
     openFolder: (kind: 'game' | 'version', versionId?: string): Promise<string> =>
       ipcRenderer.invoke('minecraft:openFolder', kind, versionId),
     launch: (opts: LaunchOptions): Promise<number> => ipcRenderer.invoke('minecraft:launch', opts),

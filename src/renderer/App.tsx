@@ -107,7 +107,12 @@ export const App: React.FC = () => {
               />
             )}
             {page === 'worlds' && <WorldsPage />}
-            {page === 'content' && <ContentPage />}
+            {page === 'content' && (
+              <ContentPage
+                lastVersionId={settings.lastVersionId}
+                onPickVersion={(id) => updateSettings({ ...settings, lastVersionId: id })}
+              />
+            )}
             {page === 'accounts' && (
               <AccountsPage
                 accounts={accounts}

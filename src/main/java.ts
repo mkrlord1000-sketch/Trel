@@ -299,7 +299,7 @@ export class JavaService {
     const slot = path.join(this.javaRoot(), `jre-${major}`);
     fs.mkdirSync(slot, { recursive: true });
 
-    const tmpFile = path.join(os.tmpdir(), `aurora-jre-${major}-${Date.now()}.${isZip ? 'zip' : 'tar.gz'}`);
+    const tmpFile = path.join(os.tmpdir(), `trel-jre-${major}-${Date.now()}.${isZip ? 'zip' : 'tar.gz'}`);
     this.report(win, { stage: `Downloading Java ${major}`, current: 0, total: 100, percent: 0 });
 
     const response = await axios.get(url, {

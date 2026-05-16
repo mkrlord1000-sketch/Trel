@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { LauncherSettings, MinecraftAccount, VersionInfo } from '../../shared/types';
-import { IconPlay, IconTrash, IconFolder, IconCube, IconArrow } from '../components/icons';
+import type { InstalledVersionDetail, LoaderType } from '../../preload/preload';
+import { IconPlay, IconTrash, IconFolder, IconCube, IconArrow, IconRefresh } from '../components/icons';
 import { useDialog } from '../components/Dialog';
 import { LoaderInstallDialog } from '../components/LoaderInstallDialog';
 
@@ -15,17 +16,24 @@ const typeLabel: Record<string, string> = {
   release: 'релиз', snapshot: 'снапшот', old_beta: 'beta', old_alpha: 'alpha',
 };
 
+const loaderLabel: Record<LoaderType, string> = {
+  fabric: 'Fabric',
+  quilt: 'Quilt',
+  forge: 'Forge',
+  neoforge: 'NeoForge',
+};
+
 export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsChange, onGoToBrowse }) => {
   const dialog = useDialog();
   const [versions, setVersions] = useState<VersionInfo[]>([]);
-  const [installed, setInstalled] = useState<string[]>([]);
+  const [details, setDetails] = useState<InstalledVersionDetail[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [status, setStatus] = useState('');
   const [loaderFor, setLoaderFor] = useState<string | null>(null);
 
   const refresh = async () => {
-    const list = await window.api.minecraft.installed();
-    setInstalled(list);
+    const list = await window.api.minecraft.installedDetailed();
+    setDetails(list);
   };
 
   useEffect(() => {
@@ -33,15 +41,19 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
     refresh();
   }, []);
 
+  // Скрываем стандалон-ваниль, если для этой же базы установлен хотя бы
+  // один лоадер — он "впитывает" её под именем базовой MC версии.
   const items = useMemo(() => {
-    return installed
-      .map((id) => {
-        const meta = versions.find((v) => v.id === id);
+    const moddedBases = new Set(details.filter((d) => d.loader).map((d) => d.baseMc));
+    return details
+      .filter((d) => d.loader || !moddedBases.has(d.id))
+      .map((d) => {
+        const meta = versions.find((v) => v.id === d.baseMc);
         return {
-          id,
+          ...d,
           type: meta?.type ?? 'unknown',
           releaseTime: meta?.releaseTime,
-          isLast: id === settings.lastVersionId,
+          isLast: d.id === settings.lastVersionId,
         };
       })
       .sort((a, b) => {
@@ -49,7 +61,7 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
         if (!a.isLast && b.isLast) return 1;
         return (b.releaseTime || '').localeCompare(a.releaseTime || '');
       });
-  }, [installed, versions, settings.lastVersionId]);
+  }, [details, versions, settings.lastVersionId]);
 
   const onPlay = async (id: string) => {
     if (!account) return;
@@ -95,10 +107,39 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
     refresh();
   };
 
-  const onUninstallAll = async () => {
-    if (installed.length === 0) return;
+  const onRevertToVanilla = async (baseMc: string) => {
     const choice = await dialog.show({
-      title: `Удалить все установленные версии (${installed.length})?`,
+      title: `Вернуть ${baseMc} к ванили?`,
+      tone: 'warn',
+      message: (
+        <>
+          Будут удалены все установленные мод-загрузчики для <b>{baseMc}</b>.
+          Ванильная установка и её папки с модами/паками <b>сохранятся</b>.
+        </>
+      ),
+      buttons: [
+        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
+        { label: 'Вернуть', value: 'ok', variant: 'default' },
+      ],
+      defaultIndex: 0,
+      cancelValue: 'cancel',
+    });
+    if (choice !== 'ok') return;
+    const { removed } = await window.api.minecraft.revertToVanilla(baseMc);
+    setStatus(removed.length > 0
+      ? `Удалено: ${removed.join(', ')}`
+      : 'Лоадеров не было.');
+    // если активная была одной из удалённых — сбросим на ванильную
+    if (settings.lastVersionId && removed.includes(settings.lastVersionId)) {
+      onSettingsChange({ ...settings, lastVersionId: baseMc });
+    }
+    refresh();
+  };
+
+  const onUninstallAll = async () => {
+    if (details.length === 0) return;
+    const choice = await dialog.show({
+      title: `Удалить все установленные версии (${details.length})?`,
       tone: 'danger',
       message: 'Все файлы версий будут удалены. Сохранения и аккаунты останутся.',
       buttons: [
@@ -109,10 +150,10 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
       cancelValue: 'cancel',
     });
     if (choice !== 'ok') return;
-    for (const id of installed) {
-      try { await window.api.minecraft.uninstall(id); } catch {}
+    for (const d of details) {
+      try { await window.api.minecraft.uninstall(d.id); } catch {}
     }
-    setStatus(`Удалено: ${installed.length} версий`);
+    setStatus(`Удалено: ${details.length} версий`);
     refresh();
   };
 
@@ -127,7 +168,7 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
         <div className="hint" style={{ marginBottom: 12 }}>{status}</div>
       )}
 
-      {installed.length === 0 ? (
+      {items.length === 0 ? (
         <div className="card" style={{ padding: 40, textAlign: 'center' }}>
           <h2 style={{ fontSize: 16, marginBottom: 8 }}>Пока нет установленных версий</h2>
           <p className="muted" style={{ fontSize: 13, marginBottom: 18 }}>
@@ -141,7 +182,7 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
         <>
           <div className="installed-head">
             <span className="muted" style={{ fontSize: 13 }}>
-              {installed.length} {pluralize(installed.length, 'версия', 'версии', 'версий')}
+              {items.length} {pluralize(items.length, 'версия', 'версии', 'версий')}
             </span>
             <div className="row">
               <button className="btn ghost sm" onClick={onGoToBrowse}>+ Добавить</button>
@@ -152,57 +193,77 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
           </div>
 
           <div className="installed-grid">
-            {items.map((it) => (
-              <div key={it.id} className={'inst-card' + (it.isLast ? ' featured' : '')}>
-                <div className="inst-card-head">
-                  <div className="inst-card-name">{it.id}</div>
-                  {it.isLast && <span className="pill">последняя</span>}
-                </div>
-                <div className="inst-card-meta">
-                  {it.type !== 'unknown' && (
-                    <span className={'tag ' + it.type}>{typeLabel[it.type] ?? it.type}</span>
-                  )}
-                  {it.releaseTime && (
-                    <span className="chip">{new Date(it.releaseTime).toLocaleDateString('ru-RU')}</span>
-                  )}
-                </div>
-                <div className="inst-card-actions">
-                  <button
-                    className="btn primary block"
-                    disabled={!account || busyId === it.id}
-                    onClick={() => onPlay(it.id)}
-                  >
-                    <IconPlay />
-                    {busyId === it.id ? 'Запуск...' : 'Играть'}
-                  </button>
-                  <div className="row" style={{ gap: 4 }}>
-                    {/^1\.\d+(\.\d+)?$/.test(it.id) && (
+            {items.map((it) => {
+              // Имя карточки: baseMc, если есть лоадер — берём базу и приписываем бейдж.
+              const showName = it.loader ? it.baseMc : it.id;
+              return (
+                <div key={it.id} className={'inst-card' + (it.isLast ? ' featured' : '')}>
+                  <div className="inst-card-head">
+                    <div className="inst-card-name">{showName}</div>
+                    {it.isLast && <span className="pill">последняя</span>}
+                  </div>
+                  <div className="inst-card-meta">
+                    {it.type !== 'unknown' && (
+                      <span className={'tag ' + it.type}>{typeLabel[it.type] ?? it.type}</span>
+                    )}
+                    {it.loader && (
+                      <span className="chip accent" title={`Лоадер: ${loaderLabel[it.loader]} ${it.loaderVersion ?? ''}`}>
+                        + {loaderLabel[it.loader]}
+                      </span>
+                    )}
+                    {it.releaseTime && (
+                      <span className="chip">{new Date(it.releaseTime).toLocaleDateString('ru-RU')}</span>
+                    )}
+                  </div>
+                  <div className="inst-card-actions">
+                    <button
+                      className="btn primary block"
+                      disabled={!account || busyId === it.id}
+                      onClick={() => onPlay(it.id)}
+                    >
+                      <IconPlay />
+                      {busyId === it.id ? 'Запуск...' : 'Играть'}
+                    </button>
+                    <div className="row" style={{ gap: 4 }}>
+                      {/* Установка лоадера доступна для чистых релизов без лоадера */}
+                      {!it.loader && /^1\.\d+(\.\d+)?$/.test(it.id) && (
+                        <button
+                          className="icon-btn"
+                          onClick={() => setLoaderFor(it.id)}
+                          title="Установить мод-загрузчик (Fabric, Forge, NeoForge, Quilt)"
+                        >
+                          <IconCube />
+                        </button>
+                      )}
+                      {/* Кнопка revert — только если это лоадер */}
+                      {it.loader && (
+                        <button
+                          className="icon-btn"
+                          onClick={() => onRevertToVanilla(it.baseMc)}
+                          title={`Вернуться к ванили (${it.baseMc})`}
+                        >
+                          <IconRefresh />
+                        </button>
+                      )}
                       <button
                         className="icon-btn"
-                        onClick={() => setLoaderFor(it.id)}
-                        title="Установить мод-загрузчик (Fabric, Forge, NeoForge, Quilt)"
+                        onClick={() => window.api.minecraft.openFolder('version', it.id)}
+                        title="Открыть папку версии"
                       >
-                        <IconCube />
+                        <IconFolder />
                       </button>
-                    )}
-                    <button
-                      className="icon-btn"
-                      onClick={() => window.api.minecraft.openFolder('version', it.id)}
-                      title="Открыть папку"
-                    >
-                      <IconFolder />
-                    </button>
-                    <button
-                      className="icon-btn"
-                      onClick={() => onUninstall(it.id)}
-                      title="Удалить"
-                    >
-                      <IconTrash />
-                    </button>
+                      <button
+                        className="icon-btn"
+                        onClick={() => onUninstall(it.id)}
+                        title="Удалить"
+                      >
+                        <IconTrash />
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}

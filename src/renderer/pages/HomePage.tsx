@@ -1,11 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { DownloadProgress, LauncherSettings, MinecraftAccount, VersionInfo } from '../../shared/types';
-import type { JavaPlan } from '../../preload/preload';
+import type { JavaPlan, InstalledVersionDetail, LoaderType } from '../../preload/preload';
 import {
   IconPlay, IconInfo, IconAlert, IconCheck, IconArrow,
   IconCube, IconRefresh,
 } from '../components/icons';
 import { describeVersion } from '../data/versions';
+
+const loaderLabel: Record<LoaderType, string> = {
+  fabric: 'Fabric', quilt: 'Quilt', forge: 'Forge', neoforge: 'NeoForge',
+};
 
 interface Props {
   settings: LauncherSettings;
@@ -25,6 +29,7 @@ export const HomePage: React.FC<Props> = ({
 }) => {
   const [versions, setVersions] = useState<VersionInfo[]>([]);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
+  const [details, setDetails] = useState<InstalledVersionDetail[]>([]);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [status, setStatus] = useState('');
   const [statusType, setStatusType] = useState<'neutral' | 'success' | 'error'>('neutral');
@@ -35,10 +40,12 @@ export const HomePage: React.FC<Props> = ({
   const logRef = useRef<HTMLDivElement>(null);
 
   const lastId = settings.lastVersionId || '';
+  const lastDetail = useMemo(() => details.find((d) => d.id === lastId) ?? null, [details, lastId]);
 
   useEffect(() => {
     window.api.minecraft.versions().then(setVersions).catch(() => {});
     window.api.minecraft.installed().then((list) => setInstalled(new Set(list)));
+    window.api.minecraft.installedDetailed().then(setDetails).catch(() => {});
 
     const offProgress = window.api.minecraft.onProgress(setProgress);
     const offLog = window.api.minecraft.onLog((line) => setLogLines((p) => [...p.slice(-500), line]));
@@ -61,8 +68,18 @@ export const HomePage: React.FC<Props> = ({
     return () => { cancelled = true; };
   }, [lastId]);
 
-  const lastVersion = useMemo(() => versions.find((v) => v.id === lastId), [versions, lastId]);
+  // Для отображения берём метаданные базовой ванильной версии (релиз/дата),
+  // даже если активна модифицированная (Forge/Fabric) — у мод-профиля своих
+  // мета-данных нет, он наследует от базы.
+  const baseForMeta = lastDetail?.baseMc ?? lastId;
+  const lastVersion = useMemo(
+    () => versions.find((v) => v.id === baseForMeta),
+    [versions, baseForMeta],
+  );
   const isInstalled = installed.has(lastId);
+  const heroTitle = lastDetail?.loader
+    ? `${lastDetail.baseMc} + ${loaderLabel[lastDetail.loader]}`
+    : (lastDetail?.id ?? lastId);
   const installedRecent = useMemo(() => {
     return [...installed]
       .filter((id) => id !== lastId)
@@ -107,7 +124,7 @@ export const HomePage: React.FC<Props> = ({
     return (
       <div className="home">
         <div className="home-hero empty-hero">
-          <div className="home-hero-eyebrow">Aurora Launcher</div>
+          <div className="home-hero-eyebrow">Trel</div>
           <h1 className="home-hero-title">Готово к запуску</h1>
           <p className="home-hero-sub">
             Выберите версию Minecraft, чтобы начать. После первого запуска она появится здесь как «продолжить».
@@ -147,13 +164,18 @@ export const HomePage: React.FC<Props> = ({
         </div>
         <div className="home-hero-row">
           <div className="home-hero-info">
-            <div className="home-hero-title">{lastId}</div>
+            <div className="home-hero-title">{heroTitle}</div>
             <div className="home-hero-meta">
               {lastVersion && (
                 <>
                   <span className={'tag ' + lastVersion.type}>{typeLabel[lastVersion.type] ?? lastVersion.type}</span>
                   <span className="chip">{new Date(lastVersion.releaseTime).toLocaleDateString('ru-RU')}</span>
                 </>
+              )}
+              {lastDetail?.loader && (
+                <span className="chip accent" title={lastDetail.id}>
+                  {loaderLabel[lastDetail.loader]} {lastDetail.loaderVersion ?? ''}
+                </span>
               )}
               {javaPlan && !javaPlan.error && (
                 <span className={'chip ' + (javaPlan.plan === 'download' ? 'warn' : 'accent')}>

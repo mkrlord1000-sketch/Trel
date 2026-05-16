@@ -95,12 +95,15 @@ export class ResetService {
     this.perform(opts);
 
     // Ищем NSIS uninstaller
-    const exePath = process.execPath;            // ...\AppData\Local\Programs\AuroraLauncher\AuroraLauncher.exe
+    const exePath = process.execPath;            // ...\AppData\Local\Programs\Trel\Trel.exe
     const exeDir = path.dirname(exePath);
     const candidates = [
+      path.join(exeDir, 'Uninstall Trel.exe'),
+      path.join(exeDir, 'Uninstall.exe'),
+      path.join(exeDir, '..', 'Uninstall Trel.exe'),
+      // Legacy: пользователи, которые ставили старую версию под именем AuroraLauncher
       path.join(exeDir, 'Uninstall AuroraLauncher.exe'),
       path.join(exeDir, 'Uninstall Aurora Launcher.exe'),
-      path.join(exeDir, 'Uninstall.exe'),
       path.join(exeDir, '..', 'Uninstall AuroraLauncher.exe'),
     ];
     const uninstaller = candidates.find((p) => fs.existsSync(p));

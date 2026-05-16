@@ -140,7 +140,7 @@ export const SettingsPage: React.FC<Props> = ({ settings, onChange }) => {
       tone: 'danger',
       message: step1 === 'wipe'
         ? 'Лаунчер и все данные будут удалены. Это действие необратимо.'
-        : 'Лаунчер будет удалён, личные данные останутся в %APPDATA%\\AuroraLauncher.',
+        : 'Лаунчер будет удалён, личные данные останутся в %APPDATA%\\Trel.',
       buttons: [
         { label: 'Отмена', value: 'cancel', variant: 'ghost' },
         { label: 'Удалить лаунчер', value: 'go', variant: 'danger' },

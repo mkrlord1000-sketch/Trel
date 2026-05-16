@@ -1,12 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { DownloadProgress, LauncherSettings, MinecraftAccount, VersionInfo } from '../../shared/types';
-import type { JavaPlan } from '../../preload/preload';
+import type { JavaPlan, InstalledVersionDetail, LoaderType } from '../../preload/preload';
 import {
   IconPlay, IconInfo, IconAlert, IconCheck, IconSearch,
   IconFolder, IconRefresh, IconCube,
 } from '../components/icons';
 import { describeVersion } from '../data/versions';
 import { LoaderInstallDialog } from '../components/LoaderInstallDialog';
+import { useDialog } from '../components/Dialog';
+
+const loaderLabel: Record<LoaderType, string> = {
+  fabric: 'Fabric', quilt: 'Quilt', forge: 'Forge', neoforge: 'NeoForge',
+};
 
 interface Props {
   settings: LauncherSettings;
@@ -22,8 +27,10 @@ const typeLabel: Record<string, string> = {
 };
 
 export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts, onSettingsChange }) => {
+  const dialog = useDialog();
   const [versions, setVersions] = useState<VersionInfo[]>([]);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
+  const [details, setDetails] = useState<InstalledVersionDetail[]>([]);
   const [selected, setSelected] = useState<string>('');
   const [filter, setFilter] = useState<Filter>('release');
   const [query, setQuery] = useState('');
@@ -35,8 +42,12 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
   const [loaderDialogOpen, setLoaderDialogOpen] = useState(false);
 
   const refreshInstalled = async () => {
-    const list = await window.api.minecraft.installed();
-    setInstalled(new Set(list));
+    const [ids, det] = await Promise.all([
+      window.api.minecraft.installed(),
+      window.api.minecraft.installedDetailed(),
+    ]);
+    setInstalled(new Set(ids));
+    setDetails(det);
   };
 
   useEffect(() => {
@@ -59,6 +70,18 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
     return () => { offProgress(); offExit(); offManifest(); };
   }, []);
 
+  // Базы, для которых установлен хотя бы один лоадер.
+  const loadersByBase = useMemo(() => {
+    const map = new Map<string, InstalledVersionDetail[]>();
+    for (const d of details) {
+      if (!d.loader) continue;
+      const arr = map.get(d.baseMc) ?? [];
+      arr.push(d);
+      map.set(d.baseMc, arr);
+    }
+    return map;
+  }, [details]);
+
   useEffect(() => {
     if (!selected) { setJavaPlan(null); return; }
     let cancelled = false;
@@ -76,7 +99,13 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
   }, [versions, query, filter]);
 
   const selectedVersion = versions.find((v) => v.id === selected);
-  const isInstalled = !!(selected && installed.has(selected));
+  // Лоадеры, установленные для выбранной MC версии
+  const loadersForSel = selected ? loadersByBase.get(selected) ?? [] : [];
+  const primaryLoader = loadersForSel[0] ?? null;
+  // То, что мы реально запустим, если нажать "Играть":
+  // если стоит лоадер — лоадер впитывает ваниль; иначе — голая версия.
+  const launchId = primaryLoader ? primaryLoader.id : selected;
+  const isInstalled = !!(selected && (installed.has(selected) || primaryLoader));
   const canAct = !!account && !!selected && !busy;
 
   const counts = useMemo(() => {
@@ -101,8 +130,8 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
         return;
       }
       setStatus('Запуск Minecraft');
-      onSettingsChange({ ...settings, lastVersionId: selected });
-      await window.api.minecraft.launch({ versionId: selected, account, memoryMb: settings.memoryMb });
+      onSettingsChange({ ...settings, lastVersionId: launchId });
+      await window.api.minecraft.launch({ versionId: launchId, account, memoryMb: settings.memoryMb });
       setStatus('Minecraft запущен');
       setStatusType('success');
     } catch (e) {
@@ -110,6 +139,36 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
       setStatusType('error');
       setBusy(false);
     }
+  };
+
+  const onRevertToVanilla = async () => {
+    if (!selected) return;
+    const choice = await dialog.show({
+      title: `Вернуть ${selected} к ванили?`,
+      tone: 'warn',
+      message: (
+        <>
+          Будут удалены все установленные мод-загрузчики для <b>{selected}</b>.
+          Ванильная установка и её папки с модами/паками <b>сохранятся</b>.
+        </>
+      ),
+      buttons: [
+        { label: 'Отмена', value: 'cancel', variant: 'ghost' },
+        { label: 'Вернуть', value: 'ok', variant: 'default' },
+      ],
+      defaultIndex: 0,
+      cancelValue: 'cancel',
+    });
+    if (choice !== 'ok') return;
+    const { removed } = await window.api.minecraft.revertToVanilla(selected);
+    await refreshInstalled();
+    if (settings.lastVersionId && removed.includes(settings.lastVersionId)) {
+      onSettingsChange({ ...settings, lastVersionId: selected });
+    }
+    setStatus(removed.length > 0
+      ? `Удалены лоадеры: ${removed.join(', ')}`
+      : 'Лоадеров для этой версии не было.');
+    setStatusType('success');
   };
 
   const onInstallOnly = async () => {
@@ -188,9 +247,12 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
               <div className="empty">Ничего не найдено</div>
             ) : (
               filtered.map((v) => {
-                const isInst = installed.has(v.id);
+                const rowLoaders = loadersByBase.get(v.id) ?? [];
+                const isInst = installed.has(v.id) || rowLoaders.length > 0;
                 const isSel = selected === v.id;
-                const isLastPlayed = v.id === settings.lastVersionId;
+                const lastId = settings.lastVersionId;
+                const isLastPlayed =
+                  v.id === lastId || rowLoaders.some((l) => l.id === lastId);
                 return (
                   <div
                     key={v.id}
@@ -208,6 +270,16 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
                       </div>
                       <div className="version-meta">
                         {new Date(v.releaseTime).toLocaleDateString('ru-RU')}
+                        {rowLoaders.map((l) => (
+                          <span
+                            key={l.id}
+                            className="chip accent"
+                            style={{ marginLeft: 6 }}
+                            title={`${loaderLabel[l.loader!]} ${l.loaderVersion ?? ''}`}
+                          >
+                            + {loaderLabel[l.loader!]}
+                          </span>
+                        ))}
                       </div>
                     </div>
                     <span className={'tag ' + v.type}>{typeLabel[v.type] ?? v.type}</span>
@@ -250,6 +322,15 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
                         <span className="chip">
                           {new Date(selectedVersion.releaseTime).toLocaleDateString('ru-RU')}
                         </span>
+                        {loadersForSel.map((l) => (
+                          <span
+                            key={l.id}
+                            className="chip accent"
+                            title={`Установлено: ${l.id}`}
+                          >
+                            + {loaderLabel[l.loader!]} {l.loaderVersion}
+                          </span>
+                        ))}
                         {javaPlan && !javaPlan.error && (
                           <span className={'chip ' + (javaPlan.plan === 'download' ? 'warn' : 'accent')}>
                             Java {javaPlan.required}
@@ -316,6 +397,16 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
                       <IconCube /> Мод-загрузчик
                     </button>
                   )}
+                  {loadersForSel.length > 0 && (
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={onRevertToVanilla}
+                      title="Удалить установленные мод-загрузчики, оставить только ванильную"
+                    >
+                      <IconRefresh /> Вернуть к ванили
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -339,7 +430,9 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
         onClose={() => setLoaderDialogOpen(false)}
         onInstalled={async (versionId) => {
           await refreshInstalled();
-          setSelected(versionId);
+          // Селект остаётся на базовой MC-версии: лоадер впитывает её.
+          // Активной делаем именно лоадер, чтобы "Играть" запустила его.
+          onSettingsChange({ ...settings, lastVersionId: versionId });
           setStatus(`Установлено: ${versionId}`);
           setStatusType('success');
         }}

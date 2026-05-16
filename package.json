@@ -1,17 +1,18 @@
 {
-  "name": "aurora-launcher",
-  "version": "1.0.5",
+  "name": "trel-launcher",
+  "version": "0.1.0",
   "description": "Modern Minecraft launcher built with Electron + React",
   "main": "dist-electron/main/main.js",
   "author": "you",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
+    "icon": "node scripts/build-icon.js",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:renderer && npm run build:electron",
     "start": "electron .",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run icon && npm run build && electron-builder --win"
   },
   "dependencies": {
     "@types/adm-zip": "^0.5.8",
@@ -34,15 +35,18 @@
     "vite": "^5.4.11"
   },
   "build": {
-    "appId": "com.aurora.launcher",
-    "productName": "AuroraLauncher",
+    "appId": "com.trel.launcher",
+    "productName": "Trel",
     "asar": true,
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "build/icon.ico",
+      "build/icon.png",
       "package.json"
     ],
     "publish": [
@@ -54,6 +58,7 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -68,8 +73,8 @@
           ]
         }
       ],
-      "artifactName": "AuroraLauncher-${version}-${arch}.${ext}",
-      "publisherName": "Aurora"
+      "artifactName": "Trel-${version}-${arch}.${ext}",
+      "publisherName": "Trel"
     },
     "nsis": {
       "oneClick": false,
@@ -77,10 +82,12 @@
       "perMachine": false,
       "differentialPackage": true,
       "deleteAppDataOnUninstall": false,
-      "shortcutName": "Aurora Launcher"
+      "shortcutName": "Trel",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "portable": {
-      "artifactName": "AuroraLauncher.exe"
+      "artifactName": "Trel.exe"
     }
   }
 }

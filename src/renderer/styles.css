@@ -1,5 +1,5 @@
 /* ============================================================
-   Aurora Launcher — UI v3
+   Trel — UI v3
    Чистая, без дублей версия. Все классы из существующего JSX
    сохранены — компоненты не правятся.
    ============================================================ */
@@ -74,7 +74,7 @@ button { font-family: inherit; }
   --fg-muted: #9097ad;
   --fg-subtle: #5b6075;
 
-  /* Accent — purple Aurora */
+  /* Accent — основной фиолетовый */
   --accent: #8b7dff;
   --accent-bright: #a99bff;
   --accent-deep: #6d5edb;
@@ -82,7 +82,7 @@ button { font-family: inherit; }
   --accent-soft-strong: rgba(139, 125, 255, 0.22);
   --accent-border: rgba(139, 125, 255, 0.38);
 
-  /* Secondary accent — aurora green for highlights */
+  /* Secondary accent — циановый для акцентов */
   --accent-2: #5ee9b0;
   --accent-2-soft: rgba(94, 233, 176, 0.12);
 
@@ -2126,6 +2126,25 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   margin-bottom: 14px;
 }
 .content-toolbar .spacer { flex: 1; }
+
+.content-version-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 14px;
+}
+.content-version-bar code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.15);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
 
 /* Grid */
 .content-grid {

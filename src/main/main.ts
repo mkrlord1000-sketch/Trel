@@ -7,6 +7,9 @@ import { LauncherUpdater } from './updater';
 const isDev = !app.isPackaged;
 const updater = new LauncherUpdater();
 
+const APP_NAME = 'Trel';
+const LEGACY_APP_NAME = 'AuroraLauncher';
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
@@ -15,7 +18,8 @@ function createWindow(): BrowserWindow {
     minHeight: 600,
     frame: false,
     backgroundColor: '#0e1016',
-    title: 'Aurora Launcher',
+    title: APP_NAME,
+    icon: path.join(app.getAppPath(), 'build', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
@@ -42,9 +46,35 @@ function createWindow(): BrowserWindow {
 }
 
 function ensureLauncherDir(): string {
-  const dir = path.join(app.getPath('appData'), 'AuroraLauncher');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  const newDir = path.join(app.getPath('appData'), APP_NAME);
+  const oldDir = path.join(app.getPath('appData'), LEGACY_APP_NAME);
+
+  // Миграция данных пользователей со старого имени (AuroraLauncher → Trel).
+  // Если новой папки ещё нет, а старая существует — переименовываем.
+  if (!fs.existsSync(newDir) && fs.existsSync(oldDir)) {
+    try {
+      fs.renameSync(oldDir, newDir);
+      // Внутри settings.json gameDir мог хранить полный путь со старым именем —
+      // переписываем, чтобы лаунчер дальше работал с обновлённым путём.
+      const settingsFile = path.join(newDir, 'settings.json');
+      if (fs.existsSync(settingsFile)) {
+        try {
+          const raw = fs.readFileSync(settingsFile, 'utf-8');
+          const parsed = JSON.parse(raw);
+          if (typeof parsed.gameDir === 'string' && parsed.gameDir.includes(oldDir)) {
+            parsed.gameDir = parsed.gameDir.split(oldDir).join(newDir);
+            fs.writeFileSync(settingsFile, JSON.stringify(parsed, null, 2), 'utf-8');
+          }
+        } catch {}
+      }
+    } catch {
+      // Если переименовать не удалось (файл занят и т.п.) — fallback: используем старую папку.
+      if (fs.existsSync(oldDir)) return oldDir;
+    }
+  }
+
+  if (!fs.existsSync(newDir)) fs.mkdirSync(newDir, { recursive: true });
+  return newDir;
 }
 
 app.whenReady().then(() => {

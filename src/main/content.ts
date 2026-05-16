@@ -45,19 +45,26 @@ export class ContentService {
 
   setGameDir(dir: string) { this.gameDir = dir; }
 
-  dirFor(kind: ContentKind): string {
-    return path.join(this.gameDir, FOLDER_BY_KIND[kind]);
+  /**
+   * Per-version content directory: versions/<id>/<sub>. If versionId is
+   * omitted we fall back to the legacy gameDir/<sub> location (so any data
+   * placed there before per-version content was introduced still shows up).
+   */
+  dirFor(kind: ContentKind, versionId?: string): string {
+    const sub = FOLDER_BY_KIND[kind];
+    if (versionId) return path.join(this.gameDir, 'versions', versionId, sub);
+    return path.join(this.gameDir, sub);
   }
 
-  /** Создать все стандартные папки контента (idempotent). */
-  ensureFolders(): void {
+  /** Создать все стандартные папки контента для версии (idempotent). */
+  ensureFolders(versionId?: string): void {
     for (const kind of Object.keys(FOLDER_BY_KIND) as ContentKind[]) {
-      try { fs.mkdirSync(this.dirFor(kind), { recursive: true }); } catch {}
+      try { fs.mkdirSync(this.dirFor(kind, versionId), { recursive: true }); } catch {}
     }
   }
 
-  list(kind: ContentKind): ContentItem[] {
-    const dir = this.dirFor(kind);
+  list(kind: ContentKind, versionId?: string): ContentItem[] {
+    const dir = this.dirFor(kind, versionId);
     if (!fs.existsSync(dir)) return [];
     let entries: fs.Dirent[];
     try {
@@ -98,8 +105,8 @@ export class ContentService {
     return out.sort((a, b) => a.displayName.localeCompare(b.displayName, 'ru'));
   }
 
-  delete(kind: ContentKind, name: string): boolean {
-    const dir = this.dirFor(kind);
+  delete(kind: ContentKind, name: string, versionId?: string): boolean {
+    const dir = this.dirFor(kind, versionId);
     const full = path.join(dir, name);
     if (!isInside(full, dir)) return false;
     if (!fs.existsSync(full)) return false;
@@ -112,8 +119,8 @@ export class ContentService {
   }
 
   /** Включить/выключить элемент: добавляет/убирает .disabled расширение. */
-  toggle(kind: ContentKind, name: string): boolean {
-    const dir = this.dirFor(kind);
+  toggle(kind: ContentKind, name: string, versionId?: string): boolean {
+    const dir = this.dirFor(kind, versionId);
     const full = path.join(dir, name);
     if (!isInside(full, dir)) return false;
     if (!fs.existsSync(full)) return false;
@@ -129,8 +136,8 @@ export class ContentService {
   }
 
   /** Скопировать файлы в папку контента. Не перезаписывает — добавляет (1), (2)... */
-  add(kind: ContentKind, sourcePaths: string[]): { copied: number; errors: string[] } {
-    const dir = this.dirFor(kind);
+  add(kind: ContentKind, sourcePaths: string[], versionId?: string): { copied: number; errors: string[] } {
+    const dir = this.dirFor(kind, versionId);
     fs.mkdirSync(dir, { recursive: true });
     const errors: string[] = [];
     let copied = 0;

@@ -147,8 +147,134 @@ export class LoaderService {
     // Кладём через стандартный installer (он умеет inheritsFrom и докачает либы)
     await this.installer.install(versionId, win);
 
+    this.flattenLoaderProfile(versionId);
+    this.ensureContentFolders(versionId);
     this.report(win, { stage: 'Готово', current: 1, total: 1, percent: 100 });
     return { versionId };
+  }
+
+  /** Create standard content folders inside versions/<id>/. */
+  private ensureContentFolders(versionId: string): void {
+    const dir = path.join(this.gameDir, 'versions', versionId);
+    for (const sub of ['mods', 'shaderpacks', 'resourcepacks', 'texturepacks']) {
+      try { fs.mkdirSync(path.join(dir, sub), { recursive: true }); } catch {}
+    }
+  }
+
+  /**
+   * Запекает родителя (inheritsFrom) внутрь профиля лоадера и удаляет
+   * родительскую папку. После flatten профиль лоадера полностью самодостаточен:
+   * libraries/arguments/mainClass/assetIndex от родителя инлайнятся, а его
+   * клиентский jar копируется в папку лоадера под именем <loaderId>.jar.
+   *
+   * Идемпотентно: если inheritsFrom уже нет — ничего не делает.
+   */
+  flattenLoaderProfile(loaderId: string): void {
+    const loaderDir = path.join(this.gameDir, 'versions', loaderId);
+    const loaderJsonPath = path.join(loaderDir, loaderId + '.json');
+    if (!fs.existsSync(loaderJsonPath)) return;
+
+    let loaderJson: any;
+    try { loaderJson = JSON.parse(fs.readFileSync(loaderJsonPath, 'utf-8')); }
+    catch { return; }
+
+    const parentId: string | undefined = loaderJson.inheritsFrom;
+    if (!parentId) return;
+
+    const parentDir = path.join(this.gameDir, 'versions', parentId);
+    const parentJsonPath = path.join(parentDir, parentId + '.json');
+    const parentJarPath  = path.join(parentDir, parentId + '.jar');
+
+    if (!fs.existsSync(parentJsonPath)) return;
+
+    let parentJson: any;
+    try { parentJson = JSON.parse(fs.readFileSync(parentJsonPath, 'utf-8')); }
+    catch { return; }
+
+    // Скаляры: сначала родитель, поверх ребёнок (mainClass/assetIndex/...)
+    const merged: any = { ...parentJson, ...loaderJson };
+    merged.id = loaderId;
+
+    // libraries: ребёнок впереди (его версии важнее), затем недостающие из родителя
+    const childLibs:  any[] = Array.isArray(loaderJson.libraries) ? loaderJson.libraries : [];
+    const parentLibs: any[] = Array.isArray(parentJson.libraries) ? parentJson.libraries : [];
+    const keyOf = (lib: any): string => {
+      if (!lib?.name || typeof lib.name !== 'string') return '';
+      const parts = lib.name.split(':');
+      return parts.length >= 2 ? parts[0] + ':' + parts[1] : lib.name;
+    };
+    const seen = new Set<string>();
+    const finalLibs: any[] = [];
+    for (const lib of childLibs) {
+      finalLibs.push(lib);
+      const k = keyOf(lib);
+      if (k) seen.add(k);
+    }
+    for (const lib of parentLibs) {
+      const k = keyOf(lib);
+      if (k && seen.has(k)) continue;
+      finalLibs.push(lib);
+    }
+    merged.libraries = finalLibs;
+
+    // arguments (modern format): конкатенация
+    if (parentJson.arguments || loaderJson.arguments) {
+      const pa = parentJson.arguments || {};
+      const ca = loaderJson.arguments || {};
+      merged.arguments = {
+        game: [
+          ...(Array.isArray(pa.game) ? pa.game : []),
+          ...(Array.isArray(ca.game) ? ca.game : []),
+        ],
+        jvm: [
+          ...(Array.isArray(pa.jvm) ? pa.jvm : []),
+          ...(Array.isArray(ca.jvm) ? ca.jvm : []),
+        ],
+      };
+    }
+    // minecraftArguments (legacy): склейка через пробел
+    if (parentJson.minecraftArguments || loaderJson.minecraftArguments) {
+      const parts = [parentJson.minecraftArguments, loaderJson.minecraftArguments].filter(Boolean);
+      merged.minecraftArguments = parts.join(' ');
+    }
+
+    // Больше не наследуемся; собственного "jar" override быть не должно
+    delete merged.inheritsFrom;
+    delete merged.jar;
+
+    fs.writeFileSync(loaderJsonPath, JSON.stringify(merged, null, 2), 'utf-8');
+
+    // Копируем клиентский jar родителя в папку лоадера под нужным именем
+    if (fs.existsSync(parentJarPath)) {
+      const newJarPath = path.join(loaderDir, loaderId + '.jar');
+      try { fs.copyFileSync(parentJarPath, newJarPath); } catch {}
+    }
+
+    // Если в родителе были content-папки (например, юзер ставил ваниль раньше) —
+    // переносим содержимое в папку лоадера, чтобы ничего не потерять.
+    for (const sub of ['mods', 'shaderpacks', 'resourcepacks', 'texturepacks', 'saves']) {
+      const fromDir = path.join(parentDir, sub);
+      if (!fs.existsSync(fromDir)) continue;
+      const toDir = path.join(loaderDir, sub);
+      try { fs.mkdirSync(toDir, { recursive: true }); } catch {}
+      try {
+        for (const entry of fs.readdirSync(fromDir)) {
+          const from = path.join(fromDir, entry);
+          const to = path.join(toDir, entry);
+          if (fs.existsSync(to)) continue;
+          try { fs.renameSync(from, to); }
+          catch {
+            try {
+              fs.cpSync(from, to, { recursive: true });
+              fs.rmSync(from, { recursive: true, force: true });
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    // Удаляем папку родителя — она больше не нужна
+    try { fs.rmSync(parentDir, { recursive: true, force: true }); } catch {}
   }
 
   private async installFabric(mc: string, lv: string, win: BrowserWindow) {
@@ -221,6 +347,8 @@ export class LoaderService {
 
     // Determine resulting version id by scanning versions/ for new entry
     const versionId = this.detectInstalledLoaderVersion(loader, mc, lv);
+    this.flattenLoaderProfile(versionId);
+    this.ensureContentFolders(versionId);
     this.report(win, { stage: 'Готово', current: 1, total: 1, percent: 100 });
     return { versionId };
   }
@@ -237,7 +365,7 @@ export class LoaderService {
           profiles: {},
           selectedProfileName: '',
           clientToken: '00000000-0000-0000-0000-000000000000',
-          launcherVersion: { name: 'Aurora', format: 21 },
+          launcherVersion: { name: 'Trel', format: 21 },
         }, null, 2), 'utf-8');
       } catch {}
     }

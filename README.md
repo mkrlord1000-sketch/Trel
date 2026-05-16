@@ -1,4 +1,4 @@
-# Aurora Launcher
+# Trel
 
 Современный кастомный лаунчер Minecraft: Electron + React + TypeScript.
 
@@ -31,7 +31,7 @@ npm start            # в другой — запустит Electron, подкл
 npm run dist
 ```
 
-Готовый файл будет в `release/AuroraLauncher.exe`.
+Готовый файл будет в `release/Trel.exe` (portable) или `release/Trel-<version>-x64.exe` (NSIS-установщик).
 
 ## Структура
 

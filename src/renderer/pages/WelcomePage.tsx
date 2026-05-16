@@ -58,7 +58,7 @@ export const WelcomePage: React.FC<Props> = ({ onDone }) => {
         </button>
 
         <div className="hint" style={{ marginTop: 20, textAlign: 'center' }}>
-          Хранится локально в <code>%APPDATA%\AuroraLauncher</code>
+          Хранится локально в <code>%APPDATA%\Trel</code>
         </div>
       </div>
     </div>

@@ -343,10 +343,11 @@ export class MinecraftInstaller {
       });
     }
 
-    // Создаём стандартные папки для контента, чтобы пользователь сразу мог
-    // бросать туда .jar моды, .zip ресурс/шейдер-паки и т.п.
+    // Создаём стандартные папки для контента ВНУТРИ папки версии — каждая
+    // версия имеет свои моды/паки. Соединение с тем, что видит игра в
+    // gameDir/<sub>, делает MinecraftService через NTFS junctions при запуске.
     for (const sub of ['mods', 'shaderpacks', 'resourcepacks', 'texturepacks']) {
-      try { await ensureDir(path.join(this.gameDir, sub)); } catch {}
+      try { await ensureDir(path.join(versionDir, sub)); } catch {}
     }
 
     this.report(win, { stage: 'Install complete', current: 1, total: 1, percent: 100 });

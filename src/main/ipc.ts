@@ -22,13 +22,22 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
   const content = new ContentService(settings.gameDir);
   const auth = new AuthService();
 
+  // Сводим существующие установки к одному folder per loader: для каждого
+  // лоадера с inheritsFrom впитываем родительскую ваниль и удаляем её папку.
+  // Безопасно для тех у кого уже всё «плоское» — flatten идемпотентен.
+  try { mc.consolidateInstalls(); } catch {}
+
   ipcMain.handle('settings:get', () => store.loadSettings());
   ipcMain.handle('settings:set', (_e, s: LauncherSettings) => {
+    const prevDir = store.loadSettings().gameDir;
     store.saveSettings(s);
     mc.setGameDir(s.gameDir);
     worlds.setGameDir(s.gameDir);
     resetSvc.setGameDir(s.gameDir);
     content.setGameDir(s.gameDir);
+    if (s.gameDir !== prevDir) {
+      try { mc.consolidateInstalls(); } catch {}
+    }
     return s;
   });
   ipcMain.handle('settings:pickDir', async () => {
@@ -54,6 +63,7 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
 
   ipcMain.handle('minecraft:versions', () => mc.fetchVersions());
   ipcMain.handle('minecraft:installed', () => mc.installedVersionIds());
+  ipcMain.handle('minecraft:installedDetailed', () => mc.installedDetailed());
   ipcMain.handle('minecraft:install', async (_e, versionId: string) => {
     await mc.install(versionId, win);
     return true;
@@ -63,6 +73,9 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
   });
   ipcMain.handle('minecraft:uninstallDeep', (_e, versionId: string) => {
     return mc.uninstallDeep(versionId);
+  });
+  ipcMain.handle('minecraft:revertToVanilla', (_e, baseMc: string) => {
+    return mc.revertToVanilla(baseMc, win);
   });
   ipcMain.handle('minecraft:openFolder', (_e, kind: 'game' | 'version', versionId?: string) => {
     const p = kind === 'version' && versionId ? mc.versionFolder(versionId) : mc.gameFolder();
@@ -128,16 +141,18 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
   });
 
   // ---- content (mods, shaders, resourcepacks, texturepacks) ----
-  ipcMain.handle('content:list', (_e, kind: ContentKind) => content.list(kind));
-  ipcMain.handle('content:delete', (_e, kind: ContentKind, name: string) => content.delete(kind, name));
-  ipcMain.handle('content:toggle', (_e, kind: ContentKind, name: string) => content.toggle(kind, name));
-  ipcMain.handle('content:openFolder', (_e, kind: ContentKind) => {
-    const dir = content.dirFor(kind);
+  ipcMain.handle('content:list', (_e, kind: ContentKind, versionId?: string) => content.list(kind, versionId));
+  ipcMain.handle('content:delete', (_e, kind: ContentKind, name: string, versionId?: string) =>
+    content.delete(kind, name, versionId));
+  ipcMain.handle('content:toggle', (_e, kind: ContentKind, name: string, versionId?: string) =>
+    content.toggle(kind, name, versionId));
+  ipcMain.handle('content:openFolder', (_e, kind: ContentKind, versionId?: string) => {
+    const dir = content.dirFor(kind, versionId);
     fs.mkdirSync(dir, { recursive: true });
     shell.openPath(dir);
     return dir;
   });
-  ipcMain.handle('content:add', async (_e, kind: ContentKind) => {
+  ipcMain.handle('content:add', async (_e, kind: ContentKind, versionId?: string) => {
     const filters = kind === 'mod'
       ? [{ name: 'Моды (.jar)', extensions: ['jar', 'disabled'] }]
       : [{ name: 'Архивы (.zip)', extensions: ['zip'] }, { name: 'Все файлы', extensions: ['*'] }];
@@ -146,7 +161,7 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
       filters,
     });
     if (res.canceled) return { copied: 0, errors: [] as string[] };
-    return content.add(kind, res.filePaths);
+    return content.add(kind, res.filePaths, versionId);
   });
 
   // ---- launcher reset ----
