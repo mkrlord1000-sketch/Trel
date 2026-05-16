@@ -1,11 +1,14 @@
 import { BrowserWindow, ipcMain, dialog } from 'electron';
 import { shell } from 'electron';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { MinecraftService } from './minecraft';
 import { AuthService } from './auth';
 import { SettingsStore } from './settings';
 import { JavaService } from './java';
 import { WorldService } from './worlds';
 import { ResetService } from './reset';
+import { ContentService, ContentKind } from './content';
 import { LauncherUpdater } from './updater';
 import { LaunchOptions, LauncherSettings } from '../shared/types';
 
@@ -16,6 +19,7 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
   const mc = new MinecraftService(settings.gameDir, java);
   const worlds = new WorldService(settings.gameDir);
   const resetSvc = new ResetService(launcherDir, settings.gameDir);
+  const content = new ContentService(settings.gameDir);
   const auth = new AuthService();
 
   ipcMain.handle('settings:get', () => store.loadSettings());
@@ -24,6 +28,7 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
     mc.setGameDir(s.gameDir);
     worlds.setGameDir(s.gameDir);
     resetSvc.setGameDir(s.gameDir);
+    content.setGameDir(s.gameDir);
     return s;
   });
   ipcMain.handle('settings:pickDir', async () => {
@@ -111,9 +116,37 @@ export function registerIpc(win: BrowserWindow, launcherDir: string, updater: La
   ipcMain.handle('worlds:deleteWithBackups', (_e, name: string) => worlds.deleteWithBackups(name));
   ipcMain.handle('worlds:backup', (_e, name: string) => worlds.backup(name));
   ipcMain.handle('worlds:openFolder', (_e, name?: string) => {
-    const p = name ? require('node:path').join(worlds.savesDir(), name) : worlds.savesDir();
-    shell.openPath(p);
-    return p;
+    if (!name) {
+      shell.openPath(worlds.savesDir());
+      return worlds.savesDir();
+    }
+    // For synthetic Pre-Classic worlds findWorldPath returns the parent dir;
+    // for regular worlds — the world folder itself.
+    const resolved = worlds.findWorldPath(name) || path.join(worlds.savesDir(), name);
+    shell.openPath(resolved);
+    return resolved;
+  });
+
+  // ---- content (mods, shaders, resourcepacks, texturepacks) ----
+  ipcMain.handle('content:list', (_e, kind: ContentKind) => content.list(kind));
+  ipcMain.handle('content:delete', (_e, kind: ContentKind, name: string) => content.delete(kind, name));
+  ipcMain.handle('content:toggle', (_e, kind: ContentKind, name: string) => content.toggle(kind, name));
+  ipcMain.handle('content:openFolder', (_e, kind: ContentKind) => {
+    const dir = content.dirFor(kind);
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir);
+    return dir;
+  });
+  ipcMain.handle('content:add', async (_e, kind: ContentKind) => {
+    const filters = kind === 'mod'
+      ? [{ name: 'Моды (.jar)', extensions: ['jar', 'disabled'] }]
+      : [{ name: 'Архивы (.zip)', extensions: ['zip'] }, { name: 'Все файлы', extensions: ['*'] }];
+    const res = await dialog.showOpenDialog(win, {
+      properties: ['openFile', 'multiSelections'],
+      filters,
+    });
+    if (res.canceled) return { copied: 0, errors: [] as string[] };
+    return content.add(kind, res.filePaths);
   });
 
   // ---- launcher reset ----

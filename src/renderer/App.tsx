@@ -8,10 +8,11 @@ import { WorldsPage } from './pages/WorldsPage';
 import { AccountsPage } from './pages/AccountsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { WelcomePage } from './pages/WelcomePage';
+import { ContentPage } from './pages/ContentPage';
 import { DialogProvider } from './components/Dialog';
 import type { LauncherSettings, MinecraftAccount } from '../shared/types';
 
-export type Page = 'home' | 'browse' | 'installed' | 'worlds' | 'accounts' | 'settings';
+export type Page = 'home' | 'browse' | 'installed' | 'worlds' | 'content' | 'accounts' | 'settings';
 
 export const App: React.FC = () => {
   const [page, setPage] = useState<Page>('home');
@@ -106,6 +107,7 @@ export const App: React.FC = () => {
               />
             )}
             {page === 'worlds' && <WorldsPage />}
+            {page === 'content' && <ContentPage />}
             {page === 'accounts' && (
               <AccountsPage
                 accounts={accounts}

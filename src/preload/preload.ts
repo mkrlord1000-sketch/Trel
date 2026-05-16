@@ -50,6 +50,18 @@ export interface LoaderVersionInfo {
   mcVersion?: string;
 }
 
+export type ContentKind = 'mod' | 'shader' | 'resourcepack' | 'texturepack';
+
+export interface ContentItem {
+  name: string;
+  displayName: string;
+  kind: ContentKind;
+  path: string;
+  size: number;
+  enabled: boolean;
+  isFolder: boolean;
+}
+
 const api = {
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
@@ -95,6 +107,18 @@ const api = {
       loaderVersion: string,
     ): Promise<{ versionId: string }> =>
       ipcRenderer.invoke('loaders:install', loader, mcVersion, loaderVersion),
+  },
+  content: {
+    list: (kind: ContentKind): Promise<ContentItem[]> =>
+      ipcRenderer.invoke('content:list', kind),
+    delete: (kind: ContentKind, name: string): Promise<boolean> =>
+      ipcRenderer.invoke('content:delete', kind, name),
+    toggle: (kind: ContentKind, name: string): Promise<boolean> =>
+      ipcRenderer.invoke('content:toggle', kind, name),
+    openFolder: (kind: ContentKind): Promise<string> =>
+      ipcRenderer.invoke('content:openFolder', kind),
+    add: (kind: ContentKind): Promise<{ copied: number; errors: string[] }> =>
+      ipcRenderer.invoke('content:add', kind),
   },
   updater: {
     state: (): Promise<UpdaterState> => ipcRenderer.invoke('updater:state'),

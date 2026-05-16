@@ -1,6 +1,6 @@
 {
   "name": "aurora-launcher",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Modern Minecraft launcher built with Electron + React",
   "main": "dist-electron/main/main.js",
   "author": "you",

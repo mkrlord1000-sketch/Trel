@@ -343,6 +343,12 @@ export class MinecraftInstaller {
       });
     }
 
+    // Создаём стандартные папки для контента, чтобы пользователь сразу мог
+    // бросать туда .jar моды, .zip ресурс/шейдер-паки и т.п.
+    for (const sub of ['mods', 'shaderpacks', 'resourcepacks', 'texturepacks']) {
+      try { await ensureDir(path.join(this.gameDir, sub)); } catch {}
+    }
+
     this.report(win, { stage: 'Install complete', current: 1, total: 1, percent: 100 });
     return ver;
   }

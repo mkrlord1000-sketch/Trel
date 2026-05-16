@@ -178,23 +178,76 @@ export class WorldService {
     };
 
     for (const root of this.legacyRoots()) scanRoot(root, root !== this.savesDir());
+
+    // Pre-Classic / Classic / rd-* версии сохраняют мир как ОДИНОЧНЫЙ файл
+    // <root>/level.dat (а не как папку). Без этой ветки такие миры были
+    // не видны в UI — пользователь не мог их удалить, и они "воскресали"
+    // при следующем запуске старой версии.
+    const gameDirResolved = path.resolve(this.gameDir).toLowerCase();
+    for (const root of this.legacyRoots()) {
+      const levelDat = path.join(root, 'level.dat');
+      if (!fs.existsSync(levelDat)) continue;
+      let stat: fs.Stats;
+      try { stat = fs.statSync(levelDat); } catch { continue; }
+      if (!stat.isFile()) continue;
+
+      const key = path.resolve(levelDat).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const inGameDir = path.resolve(root).toLowerCase().startsWith(gameDirResolved);
+      out.push({
+        name: this.syntheticLooseName(root),
+        displayName: inGameDir ? 'Pre-Classic мир' : 'Pre-Classic мир (вне лаунчера)',
+        path: root,
+        lastPlayed: stat.mtimeMs,
+        sizeBytes: stat.size,
+        hasIcon: false,
+        version: 'Pre-Classic',
+      });
+    }
+
     out.sort((a, b) => b.lastPlayed - a.lastPlayed);
     return out;
   }
 
-  /** Find absolute path of world by its folder name across all legacy roots. */
-  findWorldPath(worldName: string): string | null {
+  /** Synthetic name for a loose level.dat (Pre-Classic). Encodes the parent dir path. */
+  private syntheticLooseName(root: string): string {
+    return '~legacy:' + path.resolve(root).replace(/[\\/:]/g, '_');
+  }
+
+  /** Resolve a world name (folder OR synthetic loose) to its filesystem location. */
+  private resolveWorld(worldName: string): { kind: 'folder' | 'loose'; dir: string; levelDat: string } | null {
+    if (worldName.startsWith('~legacy:')) {
+      for (const root of this.legacyRoots()) {
+        if (this.syntheticLooseName(root) !== worldName) continue;
+        const levelDat = path.join(root, 'level.dat');
+        try {
+          if (fs.existsSync(levelDat) && fs.statSync(levelDat).isFile()) {
+            return { kind: 'loose', dir: root, levelDat };
+          }
+        } catch {}
+      }
+      return null;
+    }
     for (const root of this.legacyRoots()) {
-      const p = path.join(root, worldName);
-      if (fs.existsSync(path.join(p, 'level.dat'))) return p;
+      const dir = path.join(root, worldName);
+      const levelDat = path.join(dir, 'level.dat');
+      if (fs.existsSync(levelDat)) return { kind: 'folder', dir, levelDat };
     }
     return null;
   }
 
+  /** Find absolute path of world by its folder name across all legacy roots. */
+  findWorldPath(worldName: string): string | null {
+    const r = this.resolveWorld(worldName);
+    return r ? r.dir : null;
+  }
+
   iconDataUrl(worldName: string): string | null {
-    const dir = this.findWorldPath(worldName);
-    if (!dir) return null;
-    const p = path.join(dir, 'icon.png');
+    const r = this.resolveWorld(worldName);
+    if (!r || r.kind !== 'folder') return null;
+    const p = path.join(r.dir, 'icon.png');
     if (!fs.existsSync(p)) return null;
     try {
       const buf = fs.readFileSync(p);
@@ -205,9 +258,21 @@ export class WorldService {
   }
 
   delete(worldName: string): boolean {
-    const dir = this.findWorldPath(worldName);
-    if (!dir) return false;
-    fs.rmSync(dir, { recursive: true, force: true });
+    const r = this.resolveWorld(worldName);
+    if (!r) return false;
+    if (r.kind === 'folder') {
+      fs.rmSync(r.dir, { recursive: true, force: true });
+      return true;
+    }
+    // Pre-Classic: удаляем level.dat и любые его сиблинги-бэкапы (level.dat_old, level.dat.bak)
+    try { fs.rmSync(r.levelDat, { force: true }); } catch {}
+    try {
+      for (const entry of fs.readdirSync(r.dir)) {
+        if (/^level\.dat([._-].*)?$/i.test(entry)) {
+          try { fs.rmSync(path.join(r.dir, entry), { force: true }); } catch {}
+        }
+      }
+    } catch {}
     return true;
   }
 
@@ -217,13 +282,15 @@ export class WorldService {
     let backupsRemoved = 0;
     const backupsDir = path.join(this.gameDir, 'backups');
     if (fs.existsSync(backupsDir)) {
+      const safeName = worldName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const prefixes = [worldName + '-', safeName + '-'];
       for (const file of fs.readdirSync(backupsDir)) {
-        if (file.startsWith(worldName + '-') && file.endsWith('.zip')) {
-          try {
-            fs.unlinkSync(path.join(backupsDir, file));
-            backupsRemoved++;
-          } catch {}
-        }
+        if (!file.endsWith('.zip')) continue;
+        if (!prefixes.some((p) => file.startsWith(p))) continue;
+        try {
+          fs.unlinkSync(path.join(backupsDir, file));
+          backupsRemoved++;
+        } catch {}
       }
     }
     return { world: worldDeleted, backupsRemoved };
@@ -231,14 +298,19 @@ export class WorldService {
 
   /** Zip the world folder to `<gameDir>/backups/<worldName>-<timestamp>.zip` and return its path. */
   backup(worldName: string): string {
-    const src = this.findWorldPath(worldName);
-    if (!src) throw new Error('World not found');
+    const r = this.resolveWorld(worldName);
+    if (!r) throw new Error('World not found');
     const backupsDir = path.join(this.gameDir, 'backups');
     fs.mkdirSync(backupsDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const out = path.join(backupsDir, `${worldName}-${stamp}.zip`);
+    const safeName = worldName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const out = path.join(backupsDir, `${safeName}-${stamp}.zip`);
     const zip = new AdmZip();
-    zip.addLocalFolder(src, worldName);
+    if (r.kind === 'folder') {
+      zip.addLocalFolder(r.dir, path.basename(r.dir));
+    } else {
+      zip.addLocalFile(r.levelDat);
+    }
     zip.writeZip(out);
     return out;
   }

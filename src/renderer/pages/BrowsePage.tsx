@@ -1,12 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { DownloadProgress, LauncherSettings, MinecraftAccount, VersionInfo } from '../../shared/types';
 import type { JavaPlan } from '../../preload/preload';
 import {
   IconPlay, IconInfo, IconAlert, IconCheck, IconSearch,
-  IconFolder, IconTrash, IconRefresh, IconCube,
+  IconFolder, IconRefresh, IconCube,
 } from '../components/icons';
 import { describeVersion } from '../data/versions';
-import { useDialog } from '../components/Dialog';
 import { LoaderInstallDialog } from '../components/LoaderInstallDialog';
 
 interface Props {
@@ -23,7 +22,6 @@ const typeLabel: Record<string, string> = {
 };
 
 export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts, onSettingsChange }) => {
-  const dialog = useDialog();
   const [versions, setVersions] = useState<VersionInfo[]>([]);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string>('');
@@ -102,7 +100,6 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
         onSettingsChange({ ...settings, lastVersionId: selected });
         return;
       }
-      // Уже установлено — сразу запуск
       setStatus('Запуск Minecraft');
       onSettingsChange({ ...settings, lastVersionId: selected });
       await window.api.minecraft.launch({ versionId: selected, account, memoryMb: settings.memoryMb });
@@ -145,16 +142,24 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
     ? (isInstalled ? 'Запуск...' : 'Скачивание...')
     : (isInstalled ? 'Играть' : 'Скачать и играть');
 
-  return (
-    <div className="lib-shell">
-      <div className="page-head" style={{ flexShrink: 0, marginBottom: 14 }}>
-        <h1>Каталог версий</h1>
-        <p>Найдите и установите любую версию Minecraft</p>
-      </div>
+  const isLoaderVersion = !!selected && /^1\.\d+(\.\d+)?$/.test(selected);
 
-      <div className="lib-main">
-        <aside className="lib-left">
-          <div className="lib-left-search">
+  return (
+    <div className="catalog">
+      <header className="catalog-head">
+        <div>
+          <h1>Каталог версий</h1>
+          <p>Найдите и установите любую версию Minecraft</p>
+        </div>
+        <div className="catalog-head-stats">
+          <span className="chip"><b>{versions.length}</b> доступно</span>
+          <span className="chip success"><b>{installed.size}</b> установлено</span>
+        </div>
+      </header>
+
+      <div className="catalog-grid">
+        <aside className="catalog-list">
+          <div className="catalog-search">
             <IconSearch className="search-icon" />
             <input
               className="input"
@@ -178,7 +183,7 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
             ))}
           </div>
 
-          <div className="lib-scroll">
+          <div className="catalog-list-scroll">
             {filtered.length === 0 ? (
               <div className="empty">Ничего не найдено</div>
             ) : (
@@ -213,115 +218,119 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
           </div>
         </aside>
 
-        <section className="lib-right">
-          {!account && (
-            <div className="banner">
-              <div>
-                <h2>Нет активного аккаунта</h2>
-                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Добавьте профиль, чтобы начать игру</div>
-              </div>
-              <button className="btn primary" onClick={onGoToAccounts}>В аккаунты</button>
+        <main className="catalog-detail">
+          {!selected ? (
+            <div className="catalog-empty">
+              <div className="catalog-empty-icon"><IconCube /></div>
+              <h2>Выберите версию</h2>
+              <p>Найдите релиз, снапшот или олдовую beta-версию слева, чтобы увидеть детали и запустить игру.</p>
             </div>
-          )}
-
-          <div className="detail-head">
-            <div className="detail-eyebrow">
-              {isInstalled ? 'Установлено' : 'Не установлено'}
-            </div>
-            <div className="detail-title">{selected || '—'}</div>
-            <div className="detail-meta">
-              {selectedVersion && (
-                <>
-                  <span className={'tag ' + selectedVersion.type}>{typeLabel[selectedVersion.type] ?? selectedVersion.type}</span>
-                  <span className="chip">{new Date(selectedVersion.releaseTime).toLocaleDateString('ru-RU')}</span>
-                  {javaPlan && !javaPlan.error && (
-                    <span className={'chip ' + (javaPlan.plan === 'download' ? 'warn' : 'accent')}>
-                      Java {javaPlan.required}
-                      {javaPlan.plan === 'reuse' && <> · найдена</>}
-                      {javaPlan.plan === 'download' && <> · скачается</>}
-                    </span>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-
-          {selectedVersion && describeVersion(selectedVersion) && (
-            <div className="about-card">
-              <div className="about-head">
-                <span className="about-label">О версии</span>
-                <span className="about-id mono">{selectedVersion.id}</span>
-              </div>
-              <p className="about-text">{describeVersion(selectedVersion)}</p>
-            </div>
-          )}
-        </section>
-      </div>
-
-      <div className="lib-actionbar">
-        <div className="lib-actionbar-status">
-          {(busy && progress) ? (
-            <>
-              <IconRefresh style={{ animation: 'spin 1.4s linear infinite' }} />
-              <div className="ab-progress">
-                <div className="ab-progress-info">
-                  <span className="ab-progress-stage">{progress.stage}</span>
-                  <span>{progress.percent}%</span>
-                </div>
-                <div className="ab-progress-bar">
-                  <div className="fill" style={{ width: progress.percent + '%' }} />
-                </div>
-              </div>
-            </>
-          ) : status ? (
-            <>
-              {statusType === 'error' ? <IconAlert /> : statusType === 'success' ? <IconCheck /> : <IconInfo />}
-              <span className={'ab-status ' + statusType}>{status}</span>
-            </>
           ) : (
-            <span className="ab-status muted">{selected ? `Выбрано: ${selected}` : 'Выберите версию'}</span>
-          )}
-        </div>
+            <>
+              {!account && (
+                <div className="banner">
+                  <div>
+                    <h2>Нет активного аккаунта</h2>
+                    <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Добавьте профиль, чтобы начать игру</div>
+                  </div>
+                  <button className="btn primary" onClick={onGoToAccounts}>В аккаунты</button>
+                </div>
+              )}
 
-        <div className="lib-actionbar-actions">
-          <button
-            className="icon-btn"
-            disabled={!selected || busy || !/^1\.\d+(\.\d+)?$/.test(selected)}
-            onClick={() => setLoaderDialogOpen(true)}
-            title="Установить мод-загрузчик"
-          >
-            <IconCube />
-          </button>
-          {!isInstalled && (
-            <button
-              className="icon-btn"
-              disabled={!selected || busy}
-              onClick={onInstallOnly}
-              title="Только скачать"
-            >
-              <IconRefresh />
-            </button>
+              <div className="catalog-hero">
+                <div className="catalog-hero-info">
+                  <div className="catalog-hero-eyebrow">
+                    {isInstalled ? <><IconCheck /> Готово к игре</> : 'Не установлено'}
+                  </div>
+                  <h2 className="catalog-hero-title">{selected}</h2>
+                  <div className="catalog-hero-meta">
+                    {selectedVersion && (
+                      <>
+                        <span className={'tag ' + selectedVersion.type}>{typeLabel[selectedVersion.type] ?? selectedVersion.type}</span>
+                        <span className="chip">
+                          {new Date(selectedVersion.releaseTime).toLocaleDateString('ru-RU')}
+                        </span>
+                        {javaPlan && !javaPlan.error && (
+                          <span className={'chip ' + (javaPlan.plan === 'download' ? 'warn' : 'accent')}>
+                            Java {javaPlan.required}
+                            {javaPlan.plan === 'reuse' && <> · найдена</>}
+                            {javaPlan.plan === 'download' && <> · скачается</>}
+                            {javaPlan.plan === 'user' && <> · своя</>}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <button className="play-btn home-play block" disabled={!canAct} onClick={onInstallAndPlay}>
+                  {busy && progress && (
+                    <span className="progress-fill" style={{ width: progress.percent + '%' }} />
+                  )}
+                  <span className="label">
+                    <IconPlay />
+                    {playLabel}
+                  </span>
+                </button>
+
+                {(busy && progress) && (
+                  <div className="hero-progress">
+                    <div className="ab-progress-info">
+                      <span className="ab-progress-stage">{progress.stage}</span>
+                      <span>{progress.percent}%</span>
+                    </div>
+                    <div className="ab-progress-bar">
+                      <div className="fill" style={{ width: progress.percent + '%' }} />
+                    </div>
+                  </div>
+                )}
+
+                {status && !busy && (
+                  <div className={'status-line ' + statusType} style={{ marginTop: 12 }}>
+                    {statusType === 'error' ? <IconAlert /> : statusType === 'success' ? <IconCheck /> : <IconInfo />}
+                    <span>{status}</span>
+                  </div>
+                )}
+
+                <div className="catalog-hero-tools">
+                  {!isInstalled && (
+                    <button className="btn" disabled={!selected || busy} onClick={onInstallOnly}>
+                      <IconRefresh /> Только скачать
+                    </button>
+                  )}
+                  {isInstalled && (
+                    <button
+                      className="btn"
+                      disabled={!selected}
+                      onClick={() => selected && window.api.minecraft.openFolder('version', selected)}
+                    >
+                      <IconFolder /> Папка версии
+                    </button>
+                  )}
+                  {isLoaderVersion && (
+                    <button
+                      className="btn"
+                      disabled={!selected || busy}
+                      onClick={() => setLoaderDialogOpen(true)}
+                    >
+                      <IconCube /> Мод-загрузчик
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {selectedVersion && describeVersion(selectedVersion) && (
+                <div className="about-card">
+                  <div className="about-head">
+                    <span className="about-label">О версии</span>
+                    <span className="about-id mono">{selectedVersion.id}</span>
+                  </div>
+                  <p className="about-text">{describeVersion(selectedVersion)}</p>
+                </div>
+              )}
+            </>
           )}
-          {isInstalled && (
-            <button
-              className="icon-btn"
-              disabled={!selected}
-              onClick={() => selected && window.api.minecraft.openFolder('version', selected)}
-              title="Открыть папку"
-            >
-              <IconFolder />
-            </button>
-          )}
-          <button className="play-btn" disabled={!canAct} onClick={onInstallAndPlay}>
-            {busy && progress && (
-              <span className="progress-fill" style={{ width: progress.percent + '%' }} />
-            )}
-            <span className="label">
-              <IconPlay />
-              {playLabel}
-            </span>
-          </button>
-        </div>
+        </main>
       </div>
 
       <LoaderInstallDialog

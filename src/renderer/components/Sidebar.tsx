@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Page } from '../App';
 import type { MinecraftAccount } from '../../shared/types';
-import { IconPlay, IconCube, IconCheck, IconUser, IconSettings, IconGlobe } from './icons';
+import { IconPlay, IconCube, IconCheck, IconUser, IconSettings, IconGlobe, IconArchive } from './icons';
 
 interface Props {
   page: Page;
@@ -20,6 +20,7 @@ const PRIMARY: NavItem[] = [
   { id: 'browse',    label: 'Каталог',    Icon: IconCube },
   { id: 'installed', label: 'Моё',        Icon: IconCheck },
   { id: 'worlds',    label: 'Миры',       Icon: IconGlobe },
+  { id: 'content',   label: 'Контент',    Icon: IconArchive },
 ];
 const SECONDARY: NavItem[] = [
   { id: 'accounts', label: 'Аккаунты',  Icon: IconUser },

@@ -48,21 +48,31 @@ export class LoaderService {
 
   private async listFabric(mc: string): Promise<LoaderVersion[]> {
     const url = `https://meta.fabricmc.net/v2/versions/loader/${encodeURIComponent(mc)}`;
-    const { data } = await axios.get(url, { timeout: 15000 });
-    return (data as any[]).map((it) => ({
-      loader: 'fabric' as const,
-      version: it.loader.version,
-      stable: it.loader.stable,
-    }));
+    try {
+      const { data } = await axios.get(url, { timeout: 15000 });
+      if (!Array.isArray(data)) return [];
+      return data.map((it: any) => ({
+        loader: 'fabric' as const,
+        version: it.loader.version,
+        stable: it.loader.stable,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   private async listQuilt(mc: string): Promise<LoaderVersion[]> {
     const url = `https://meta.quiltmc.org/v3/versions/loader/${encodeURIComponent(mc)}`;
-    const { data } = await axios.get(url, { timeout: 15000 });
-    return (data as any[]).map((it) => ({
-      loader: 'quilt' as const,
-      version: it.loader.version,
-    }));
+    try {
+      const { data } = await axios.get(url, { timeout: 15000 });
+      if (!Array.isArray(data)) return [];
+      return data.map((it: any) => ({
+        loader: 'quilt' as const,
+        version: it.loader.version,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   private async listNeoForge(mc: string): Promise<LoaderVersion[]> {
@@ -196,9 +206,13 @@ export class LoaderService {
       resp.data.pipe(out);
     });
 
-    // Need Java to run the installer
+    // Need Java to run the installer. Подбираем под версию MC:
+    // 1.17+ → Java 17, иначе Java 8.
     this.report(win, { stage: 'Подготовка Java', current: 0, total: 1, percent: 60 });
-    const java = await this.java.findBest(17) ?? await this.java.findBest(8) ?? await this.java.ensure(17, win);
+    const requiredMajor = mcRequiredJavaMajor(mc);
+    const java =
+      (await this.java.findBest(requiredMajor)) ??
+      (await this.java.ensure(requiredMajor, win));
 
     this.report(win, { stage: `Запуск ${loader} installer`, current: 0, total: 1, percent: 70 });
     await this.runJar(java.path, tmpFile);
@@ -212,16 +226,45 @@ export class LoaderService {
   }
 
   private runJar(javaPath: string, jarFile: string): Promise<void> {
+    // Forge / NeoForge installer в режиме --installClient читает
+    // launcher_profiles.json и падает с кодом 1, если файла нет. Подсовываем
+    // минимальный валидный stub, чтобы пройти проверку.
+    const profilesFile = path.join(this.gameDir, 'launcher_profiles.json');
+    if (!fs.existsSync(profilesFile)) {
+      try {
+        fs.mkdirSync(this.gameDir, { recursive: true });
+        fs.writeFileSync(profilesFile, JSON.stringify({
+          profiles: {},
+          selectedProfileName: '',
+          clientToken: '00000000-0000-0000-0000-000000000000',
+          launcherVersion: { name: 'Aurora', format: 21 },
+        }, null, 2), 'utf-8');
+      } catch {}
+    }
+
+    // На Windows JavaService возвращает javaw.exe (без консоли). Для
+    // инсталлеров переключаемся на java.exe — иначе stderr/stdout не
+    // прокидываются в spawn, и при ошибке у нас остаётся пустое сообщение.
+    let exe = javaPath;
+    if (process.platform === 'win32' && exe.toLowerCase().endsWith('javaw.exe')) {
+      const consoleExe = exe.slice(0, -'javaw.exe'.length) + 'java.exe';
+      if (fs.existsSync(consoleExe)) exe = consoleExe;
+    }
+
     return new Promise((resolve, reject) => {
-      // Forge installer accepts --installClient. NeoForge follows same pattern.
+      // Forge installer accepts --installClient <path>. NeoForge follows same pattern.
       const args = ['-jar', jarFile, '--installClient', this.gameDir];
-      const proc = spawn(javaPath, args, { stdio: 'pipe' });
+      const proc = spawn(exe, args, { stdio: 'pipe', windowsHide: true });
       let stderr = '';
+      let stdout = '';
+      proc.stdout?.on('data', (d) => stdout += d.toString());
       proc.stderr?.on('data', (d) => stderr += d.toString());
       proc.on('error', reject);
       proc.on('exit', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`Installer завершился с кодом ${code}: ${stderr.slice(0, 500)}`));
+        if (code === 0) return resolve();
+        const combined = (stderr + (stderr && stdout ? '\n' : '') + stdout).trim();
+        const detail = combined ? `:\n${combined.slice(-1500)}` : '';
+        reject(new Error(`Installer завершился с кодом ${code}${detail}`));
       });
     });
   }
@@ -251,4 +294,16 @@ function mcToNeoForgePrefix(mc: string): string | null {
   const m = /^1\.(\d+)(?:\.(\d+))?$/.exec(mc);
   if (!m) return null;
   return m[2] ? `${m[1]}.${m[2]}.` : `${m[1]}.`;
+}
+
+/**
+ * Какая версия Java нужна для запуска Forge/NeoForge installer-а под данную
+ * версию MC. 1.18+ — Java 17, всё что старше — Java 8.
+ */
+function mcRequiredJavaMajor(mc: string): number {
+  const m = /^1\.(\d+)/.exec(mc);
+  if (!m) return 17;
+  const minor = parseInt(m[1], 10);
+  if (minor >= 18) return 17;
+  return 8;
 }
