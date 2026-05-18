@@ -100,9 +100,11 @@ Write-Host "[2/3] Creating release $tag..."
 
 $notes = ''
 if ($NotesFile -and (Test-Path $NotesFile)) {
-  $notes = Get-Content $NotesFile -Raw
+  # Force UTF-8 read: PowerShell 5.1 default encoding is Windows-1251 here,
+  # which would mangle Cyrillic in release notes.
+  $notes = [System.IO.File]::ReadAllText((Resolve-Path $NotesFile), [System.Text.UTF8Encoding]::new($false))
 } elseif (Test-Path (Join-Path $repoRoot 'RELEASE_NOTES.md')) {
-  $notes = Get-Content (Join-Path $repoRoot 'RELEASE_NOTES.md') -Raw
+  $notes = [System.IO.File]::ReadAllText((Resolve-Path (Join-Path $repoRoot 'RELEASE_NOTES.md')), [System.Text.UTF8Encoding]::new($false))
 } else {
   $notes = "Trel $version"
 }
@@ -115,8 +117,13 @@ $body = @{
   prerelease = $false
 } | ConvertTo-Json -Depth 4
 
+# PowerShell 5.1 by default sends body in Windows-1251 if it contains non-ASCII.
+# GitHub then fails to parse JSON. Encode to UTF-8 bytes manually so the
+# Content-Type charset matches what we actually send.
+$bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+
 try {
-  $release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Headers $headers -Body $body -ContentType 'application/json'
+  $release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Headers $headers -Body $bodyBytes -ContentType 'application/json; charset=utf-8'
 } catch {
   $code = $_.Exception.Response.StatusCode.Value__
   if ($code -eq 401) {
