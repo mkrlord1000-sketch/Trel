@@ -1,25 +1,25 @@
-<#
+﻿<#
 .SYNOPSIS
-  Создаёт ОДИН новый GitHub Release с артефактами из release/.
-  В отличие от publish.ps1 — НЕ удаляет существующие релизы и теги,
-  безопасен для повторных публикаций.
+  Creates ONE GitHub Release with artifacts from release/.
+  Unlike publish.ps1 it does NOT delete existing releases or tags.
 
 .PARAMETER Token
-  GitHub Personal Access Token. Нужен write-доступ к репозиторию:
-  Classic PAT со scope "repo", или fine-grained с "Contents: Read and write".
+  GitHub Personal Access Token. Needs write access to the repository:
+  Classic PAT with the "repo" scope, or a fine-grained token with
+  "Contents: Read and write" on this repo.
 
 .PARAMETER NotesFile
-  Опционально: путь к файлу с release notes (markdown). По умолчанию
-  берётся `RELEASE_NOTES.md` из корня репо, если есть; иначе — короткий
-  текст из package.json.version.
+  Optional path to a markdown file with release notes. By default
+  RELEASE_NOTES.md from the repo root is used; otherwise a short
+  fallback string built from package.json.version.
 
 .EXAMPLE
   .\scripts\publish-release.ps1 -Token ghp_xxxxxxxxxxxxxxxxxxxx
 
 .NOTES
-  Owner/repo и version читаются из package.json. Тег: "v" + version.
-  Если тег уже существует на GitHub — релиз будет привязан к нему.
-  Если релиз с этим тегом уже существует — выйдет с ошибкой (без удаления).
+  Owner/repo and version are read from package.json. Tag is "v" + version.
+  If a release with that tag already exists, the script aborts without
+  changing anything (so re-running is safe).
 #>
 param(
   [Parameter(Mandatory = $true)]
@@ -55,19 +55,35 @@ $headers = @{
   'User-Agent'           = 'trel-publish-release'
 }
 
-# ---------- 1. Проверить, что тег существует и релиза с ним пока нет ----
-Write-Host "`n[1/3] Checking tag and existing release..."
+# ---------- 1. Verify the tag exists and no release uses it yet ----------
+Write-Host ""
+Write-Host "[1/3] Checking tag and existing release..."
 try {
   $existing = Invoke-RestMethod -Method Get -Uri "$apiBase/releases/tags/$([uri]::EscapeDataString($tag))" -Headers $headers
   if ($existing) {
     throw "Release for $tag already exists: $($existing.html_url). Aborting to avoid overwriting it."
   }
 } catch {
-  if ($_.Exception.Response.StatusCode.Value__ -ne 404) { throw }
-  # 404 — релиза нет, это нормально
+  $code = $_.Exception.Response.StatusCode.Value__
+  if ($code -ne 404) {
+    if ($code -eq 401) {
+      Write-Host ""
+      Write-Host "[ERROR 401] Token rejected by GitHub." -ForegroundColor Red
+      Write-Host "Possible reasons:"
+      Write-Host "  1. Token expired or revoked."
+      Write-Host "  2. Token lacks 'repo' scope (classic PAT) or 'Contents: write' (fine-grained)."
+      Write-Host "  3. Token belongs to a different account that has no access to $owner/$repo."
+      Write-Host ""
+      Write-Host "Check:"
+      Write-Host "  https://github.com/settings/tokens"
+      Write-Host "  That repo $owner/$repo exists and the token's account can write to it."
+      throw "401 Unauthorized"
+    }
+    throw
+  }
+  # 404 means no release yet, which is fine for us
 }
 
-# Проверяем что тег как ref существует на сервере
 try {
   Invoke-RestMethod -Method Get -Uri "$apiBase/git/ref/tags/$([uri]::EscapeDataString($tag))" -Headers $headers | Out-Null
   Write-Host "  Tag exists on remote."
@@ -78,8 +94,9 @@ try {
   throw
 }
 
-# ---------- 2. Создать релиз ------------------------------------------
-Write-Host "`n[2/3] Creating release $tag..."
+# ---------- 2. Create the release ----------
+Write-Host ""
+Write-Host "[2/3] Creating release $tag..."
 
 $notes = ''
 if ($NotesFile -and (Test-Path $NotesFile)) {
@@ -102,29 +119,25 @@ try {
   $release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Headers $headers -Body $body -ContentType 'application/json'
 } catch {
   $code = $_.Exception.Response.StatusCode.Value__
-  $msg = $_.Exception.Message
   if ($code -eq 401) {
-    Write-Host "`n[ERROR 401] Token не принят GitHub'ом." -ForegroundColor Red
-    Write-Host "Возможные причины:"
-    Write-Host "  1. Токен истёк или удалён."
-    Write-Host "  2. У токена нет scope 'repo' (для classic PAT) или 'Contents: write' (для fine-grained)."
-    Write-Host "  3. Токен от другого аккаунта, не имеющего доступ к $owner/$repo."
-    Write-Host "`nПроверь:"
-    Write-Host "  https://github.com/settings/tokens — что токен активен и со scope 'repo'."
-    Write-Host "  Что репозиторий $owner/$repo существует и доступен этому аккаунту."
-    throw "401 Unauthorized — см. выше"
+    Write-Host ""
+    Write-Host "[ERROR 401] Token rejected when creating release." -ForegroundColor Red
+    Write-Host "Make sure the token has 'repo' scope (classic) or 'Contents: write' (fine-grained)."
+    throw "401 Unauthorized"
   }
   if ($code -eq 404) {
-    Write-Host "`n[ERROR 404] Репозиторий $owner/$repo не найден или у токена нет к нему доступа." -ForegroundColor Red
-    Write-Host "Если репозиторий был переименован, обнови package.json (build.publish[0].repo)."
-    throw "404 Not Found — см. выше"
+    Write-Host ""
+    Write-Host "[ERROR 404] Repository $owner/$repo not found or token has no access." -ForegroundColor Red
+    Write-Host "If the repo was renamed, update package.json (build.publish[0].repo)."
+    throw "404 Not Found"
   }
   throw
 }
 Write-Host "  Release created: $($release.html_url)"
 
-# ---------- 3. Загрузить артефакты ------------------------------------
-Write-Host "`n[3/3] Uploading artifacts..."
+# ---------- 3. Upload artifacts ----------
+Write-Host ""
+Write-Host "[3/3] Uploading artifacts..."
 $releaseDir = Join-Path $repoRoot 'release'
 $assetFiles = @(
   "Trel-$version-x64.exe",
@@ -133,7 +146,7 @@ $assetFiles = @(
   "latest.yml"
 )
 
-# upload_url приходит как ".../assets{?name,label}" — убираем шаблон
+# upload_url comes back as ".../assets{?name,label}" - strip the template
 $uploadBase = $release.upload_url -replace '\{.*\}$', ''
 
 foreach ($name in $assetFiles) {
@@ -143,7 +156,8 @@ foreach ($name in $assetFiles) {
     continue
   }
   $size = (Get-Item $path).Length
-  Write-Host "  Uploading $name ($([math]::Round($size / 1MB, 1)) MB)..."
+  $sizeMb = [math]::Round($size / 1MB, 1)
+  Write-Host "  Uploading $name ($sizeMb MB)..."
 
   $uploadUrl = "${uploadBase}?name=$([uri]::EscapeDataString($name))"
   $bytes = [System.IO.File]::ReadAllBytes($path)
@@ -155,4 +169,5 @@ foreach ($name in $assetFiles) {
   Write-Host "    OK: $($resp.browser_download_url)"
 }
 
-Write-Host "`nDone. Release URL: $($release.html_url)"
+Write-Host ""
+Write-Host "Done. Release URL: $($release.html_url)"
