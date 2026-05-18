@@ -98,7 +98,29 @@ $body = @{
   prerelease = $false
 } | ConvertTo-Json -Depth 4
 
-$release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Headers $headers -Body $body -ContentType 'application/json'
+try {
+  $release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Headers $headers -Body $body -ContentType 'application/json'
+} catch {
+  $code = $_.Exception.Response.StatusCode.Value__
+  $msg = $_.Exception.Message
+  if ($code -eq 401) {
+    Write-Host "`n[ERROR 401] Token не принят GitHub'ом." -ForegroundColor Red
+    Write-Host "Возможные причины:"
+    Write-Host "  1. Токен истёк или удалён."
+    Write-Host "  2. У токена нет scope 'repo' (для classic PAT) или 'Contents: write' (для fine-grained)."
+    Write-Host "  3. Токен от другого аккаунта, не имеющего доступ к $owner/$repo."
+    Write-Host "`nПроверь:"
+    Write-Host "  https://github.com/settings/tokens — что токен активен и со scope 'repo'."
+    Write-Host "  Что репозиторий $owner/$repo существует и доступен этому аккаунту."
+    throw "401 Unauthorized — см. выше"
+  }
+  if ($code -eq 404) {
+    Write-Host "`n[ERROR 404] Репозиторий $owner/$repo не найден или у токена нет к нему доступа." -ForegroundColor Red
+    Write-Host "Если репозиторий был переименован, обнови package.json (build.publish[0].repo)."
+    throw "404 Not Found — см. выше"
+  }
+  throw
+}
 Write-Host "  Release created: $($release.html_url)"
 
 # ---------- 3. Загрузить артефакты ------------------------------------
