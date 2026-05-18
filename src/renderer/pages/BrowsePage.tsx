@@ -3,11 +3,13 @@ import type { DownloadProgress, LauncherSettings, MinecraftAccount, VersionInfo 
 import type { JavaPlan, InstalledVersionDetail, LoaderType } from '../../preload/preload';
 import {
   IconPlay, IconInfo, IconAlert, IconCheck, IconSearch,
-  IconFolder, IconRefresh, IconCube,
+  IconFolder, IconRefresh, IconCube, IconSkinOff,
 } from '../components/icons';
 import { describeVersion } from '../data/versions';
 import { LoaderInstallDialog } from '../components/LoaderInstallDialog';
 import { useDialog } from '../components/Dialog';
+import { supportsCustomSkin } from '../../shared/skin-support';
+import { effectiveInstalledCount } from '../../shared/installed';
 
 const loaderLabel: Record<LoaderType, string> = {
   fabric: 'Fabric', quilt: 'Quilt', forge: 'Forge', neoforge: 'NeoForge',
@@ -57,6 +59,10 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
         const first = list.find((v) => v.type === 'release') || list[0];
         setSelected(first.id);
       }
+    }).catch((e) => {
+      // Без интернета или при недоступности Mojang — пустой каталог + сообщение
+      setStatus('Не удалось загрузить список версий: ' + (e as Error).message);
+      setStatusType('error');
     });
     refreshInstalled();
 
@@ -125,7 +131,6 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
         await refreshInstalled();
         setStatus('Установлено: ' + selected);
         setStatusType('success');
-        setBusy(false);
         onSettingsChange({ ...settings, lastVersionId: selected });
         return;
       }
@@ -137,6 +142,9 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
     } catch (e) {
       setStatus('Ошибка: ' + (e as Error).message);
       setStatusType('error');
+    } finally {
+      // Снимаем busy сразу: launch возвращает PID при старте, а не при завершении.
+      // Пользователь может тут же запустить вторую сессию или другую версию.
       setBusy(false);
     }
   };
@@ -160,13 +168,18 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
       cancelValue: 'cancel',
     });
     if (choice !== 'ok') return;
-    const { removed } = await window.api.minecraft.revertToVanilla(selected);
+    const result = await window.api.minecraft.revertToVanilla(selected);
     await refreshInstalled();
-    if (settings.lastVersionId && removed.includes(settings.lastVersionId)) {
+    // Backend сам обновил lastVersionId если нужно — синхронизируем UI
+    // через возвращённый settings, чтобы не было гонки между слоями.
+    if (result.settings) {
+      onSettingsChange(result.settings);
+    } else if (settings.lastVersionId && result.removed.includes(settings.lastVersionId)) {
+      // Совместимость со старым форматом ответа
       onSettingsChange({ ...settings, lastVersionId: selected });
     }
-    setStatus(removed.length > 0
-      ? `Удалены лоадеры: ${removed.join(', ')}`
+    setStatus(result.removed.length > 0
+      ? `Удалены лоадеры: ${result.removed.join(', ')}`
       : 'Лоадеров для этой версии не было.');
     setStatusType('success');
   };
@@ -212,7 +225,7 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
         </div>
         <div className="catalog-head-stats">
           <span className="chip"><b>{versions.length}</b> доступно</span>
-          <span className="chip success"><b>{installed.size}</b> установлено</span>
+          <span className="chip success"><b>{effectiveInstalledCount(details)}</b> установлено</span>
         </div>
       </header>
 
@@ -253,6 +266,7 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
                 const lastId = settings.lastVersionId;
                 const isLastPlayed =
                   v.id === lastId || rowLoaders.some((l) => l.id === lastId);
+                const noSkin = !supportsCustomSkin(v.id);
                 return (
                   <div
                     key={v.id}
@@ -282,6 +296,14 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
                         ))}
                       </div>
                     </div>
+                    {noSkin && (
+                      <span
+                        className="row-noskin"
+                        title="Кастомные скины не поддерживаются (pre-1.6)"
+                      >
+                        <IconSkinOff />
+                      </span>
+                    )}
                     <span className={'tag ' + v.type}>{typeLabel[v.type] ?? v.type}</span>
                   </div>
                 );
@@ -337,6 +359,14 @@ export const BrowsePage: React.FC<Props> = ({ settings, account, onGoToAccounts,
                             {javaPlan.plan === 'reuse' && <> · найдена</>}
                             {javaPlan.plan === 'download' && <> · скачается</>}
                             {javaPlan.plan === 'user' && <> · своя</>}
+                          </span>
+                        )}
+                        {!supportsCustomSkin(selected) && (
+                          <span
+                            className="chip warn"
+                            title="Кастомные скины через authlib-injector не работают на pre-1.6 версиях"
+                          >
+                            <IconSkinOff /> без скинов
                           </span>
                         )}
                       </>

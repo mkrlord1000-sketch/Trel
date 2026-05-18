@@ -2,6 +2,15 @@ export interface MinecraftAccount {
   type: 'offline';
   name: string;
   uuid: string;
+  /**
+   * Кастомный скин в виде data-URL (PNG, 64×64 или 64×32 legacy).
+   * Используется для отображения аватара/превью внутри лаунчера.
+   * В offline-режиме сама игра свой скин в текстурах НЕ покажет —
+   * для этого нужен либо мод-скин-лоадер, либо локальный yggdrasil-сервер.
+   */
+  skin?: string;
+  /** Модель скина: classic (Steve, 4px руки) или slim (Alex, 3px руки). */
+  skinModel?: 'classic' | 'slim';
 }
 
 export interface VersionInfo {
@@ -15,15 +24,6 @@ export interface LaunchOptions {
   versionId: string;
   account: MinecraftAccount;
   memoryMb: number;
-}
-
-export interface Instance {
-  id: string;
-  name: string;
-  versionId: string;
-  loader: 'vanilla' | 'fabric' | 'forge' | 'quilt';
-  loaderVersion?: string;
-  createdAt: string;
 }
 
 export interface LauncherSettings {

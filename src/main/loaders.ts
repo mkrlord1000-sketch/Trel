@@ -242,13 +242,16 @@ export class LoaderService {
     delete merged.inheritsFrom;
     delete merged.jar;
 
-    fs.writeFileSync(loaderJsonPath, JSON.stringify(merged, null, 2), 'utf-8');
-
-    // Копируем клиентский jar родителя в папку лоадера под нужным именем
+    // Атомарность: сначала копируем JAR родителя в папку лоадера, и только
+    // потом перезаписываем JSON с удалением `inheritsFrom`. Если процесс
+    // упадёт между шагами, лоадер либо ещё имеет inheritsFrom (можно
+    // повторить flatten), либо уже имеет JAR (запускается).
     if (fs.existsSync(parentJarPath)) {
       const newJarPath = path.join(loaderDir, loaderId + '.jar');
       try { fs.copyFileSync(parentJarPath, newJarPath); } catch {}
     }
+
+    fs.writeFileSync(loaderJsonPath, JSON.stringify(merged, null, 2), 'utf-8');
 
     // Если в родителе были content-папки (например, юзер ставил ваниль раньше) —
     // переносим содержимое в папку лоадера, чтобы ничего не потерять.
@@ -341,9 +344,14 @@ export class LoaderService {
       (await this.java.ensure(requiredMajor, win));
 
     this.report(win, { stage: `Запуск ${loader} installer`, current: 0, total: 1, percent: 70 });
-    await this.runJar(java.path, tmpFile);
-
-    try { fs.unlinkSync(tmpFile); } catch {}
+    try {
+      await this.runJar(java.path, tmpFile);
+    } finally {
+      // tmpFile нужно удалить ВСЕГДА — даже если runJar бросил исключение.
+      // Раньше это делалось только при success, и ~30 МБ оставались в %TEMP%
+      // после каждой неудачной установки.
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
 
     // Determine resulting version id by scanning versions/ for new entry
     const versionId = this.detectInstalledLoaderVersion(loader, mc, lv);

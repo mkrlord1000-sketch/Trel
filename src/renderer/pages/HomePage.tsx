@@ -6,6 +6,7 @@ import {
   IconCube, IconRefresh,
 } from '../components/icons';
 import { describeVersion } from '../data/versions';
+import { effectiveInstalledCount } from '../../shared/installed';
 
 const loaderLabel: Record<LoaderType, string> = {
   fabric: 'Fabric', quilt: 'Quilt', forge: 'Forge', neoforge: 'NeoForge',
@@ -81,12 +82,20 @@ export const HomePage: React.FC<Props> = ({
     ? `${lastDetail.baseMc} + ${loaderLabel[lastDetail.loader]}`
     : (lastDetail?.id ?? lastId);
   const installedRecent = useMemo(() => {
+    // Скрываем «впитанную» ваниль: если для базы есть лоадер, отдельную
+    // ванильную карточку не показываем.
+    const moddedBases = new Set(details.filter((d) => d.loader).map((d) => d.baseMc));
     return [...installed]
       .filter((id) => id !== lastId)
+      .filter((id) => {
+        const det = details.find((d) => d.id === id);
+        if (det?.loader) return true;
+        return !moddedBases.has(id);
+      })
       .map((id) => versions.find((v) => v.id === id))
       .filter((v): v is VersionInfo => !!v)
       .slice(0, 6);
-  }, [installed, versions, lastId]);
+  }, [installed, details, versions, lastId]);
 
   const canPlay = !!account && !!lastId && !busy;
 
@@ -115,6 +124,10 @@ export const HomePage: React.FC<Props> = ({
     } catch (e) {
       setStatus('Ошибка: ' + (e as Error).message);
       setStatusType('error');
+    } finally {
+      // Снимаем busy сразу после возврата launch (он отдаёт PID немедленно
+      // при старте процесса). Иначе кнопка остаётся disabled пока пользователь
+      // не закроет игру — это блокирует любые последующие действия.
       setBusy(false);
     }
   };
@@ -239,7 +252,7 @@ export const HomePage: React.FC<Props> = ({
           <div className="home-tile-icon"><IconRefresh /></div>
           <div className="home-tile-body">
             <div className="home-tile-title">Установленные</div>
-            <div className="home-tile-sub">{installed.size} {pluralize(installed.size, 'версия', 'версии', 'версий')}</div>
+            <div className="home-tile-sub">{effectiveInstalledCount(details)} {pluralize(effectiveInstalledCount(details), 'версия', 'версии', 'версий')}</div>
           </div>
           <IconArrow />
         </button>

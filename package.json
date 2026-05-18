@@ -1,6 +1,6 @@
 {
   "name": "trel-launcher",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Modern Minecraft launcher built with Electron + React",
   "main": "dist-electron/main/main.js",
   "author": "you",
@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "icon": "node scripts/build-icon.js",
+    "skins": "tsc --module commonjs --target es2020 --esModuleInterop --skipLibCheck scripts/generate-skins.ts --outDir scripts/.tmp && node scripts/.tmp/generate-skins.js && node -e \"require('fs').rmSync('scripts/.tmp',{recursive:true,force:true})\"",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:renderer && npm run build:electron",
@@ -24,11 +25,13 @@
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
+    "pngjs": "^7.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.6.3",

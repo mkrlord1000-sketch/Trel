@@ -9,10 +9,12 @@ import { AccountsPage } from './pages/AccountsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { ContentPage } from './pages/ContentPage';
+import { SkinPage } from './pages/SkinPage';
+import { ServersPage } from './pages/ServersPage';
 import { DialogProvider } from './components/Dialog';
 import type { LauncherSettings, MinecraftAccount } from '../shared/types';
 
-export type Page = 'home' | 'browse' | 'installed' | 'worlds' | 'content' | 'accounts' | 'settings';
+export type Page = 'home' | 'browse' | 'installed' | 'worlds' | 'content' | 'servers' | 'skin' | 'accounts' | 'settings';
 
 export const App: React.FC = () => {
   const [page, setPage] = useState<Page>('home');
@@ -113,12 +115,23 @@ export const App: React.FC = () => {
                 onPickVersion={(id) => updateSettings({ ...settings, lastVersionId: id })}
               />
             )}
+            {page === 'servers' && <ServersPage />}
             {page === 'accounts' && (
               <AccountsPage
                 accounts={accounts}
                 activeUuid={activeUuid}
                 onSelect={setActiveUuid}
                 onChange={refreshAccounts}
+                onGoToSkin={() => setPage('skin')}
+              />
+            )}
+            {page === 'skin' && (
+              <SkinPage
+                accounts={accounts}
+                activeUuid={activeUuid}
+                onSelect={setActiveUuid}
+                onChange={refreshAccounts}
+                onGoToAccounts={() => setPage('accounts')}
               />
             )}
             {page === 'settings' && (

@@ -110,8 +110,24 @@ function listDirSafe(dir: string): string[] {
   }
 }
 
+/** Версия формата java-cache.json. Меняется при breaking-change структуры. */
+const JAVA_CACHE_VERSION = 1;
+/** Сколько времени трастим persistent-кэш без фонового re-scan. 7 дней. */
+const JAVA_CACHE_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface JavaCacheFile {
+  version: number;
+  scannedAt: number;
+  platform: string;          // process.platform + '-' + process.arch
+  installs: JavaInstall[];
+}
+
 export class JavaService {
   private cache: JavaInstall[] | null = null;
+  /** Промис текущего scan(), чтобы параллельные вызовы шарили один обход. */
+  private scanInFlight: Promise<JavaInstall[]> | null = null;
+  /** Был ли persistent-кэш загружен в this.cache (а не результат scan). */
+  private cacheLoadedFromDisk = false;
 
   constructor(private launcherDir: string) {}
 
@@ -119,6 +135,53 @@ export class JavaService {
     const dir = path.join(this.launcherDir, 'java');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  private cacheFile(): string {
+    return path.join(this.launcherDir, 'java-cache.json');
+  }
+
+  /** Грузит persistent-кэш с диска, фильтруя несуществующие пути. Null если кэш отсутствует/повреждён/устарел по платформе. */
+  private loadCacheFromDisk(): { installs: JavaInstall[]; scannedAt: number } | null {
+    try {
+      const file = this.cacheFile();
+      if (!fs.existsSync(file)) return null;
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as JavaCacheFile;
+      if (raw.version !== JAVA_CACHE_VERSION) return null;
+      const platform = `${process.platform}-${process.arch}`;
+      if (raw.platform !== platform) return null;
+      if (!Array.isArray(raw.installs)) return null;
+      // Отсеиваем пути которых уже нет на диске — пользователь мог
+      // удалить JRE между запусками.
+      const valid = raw.installs.filter((i) =>
+        i && typeof i.path === 'string' && fs.existsSync(i.path)
+      );
+      if (valid.length === 0) return null;
+      return { installs: valid, scannedAt: raw.scannedAt ?? 0 };
+    } catch {
+      return null;
+    }
+  }
+
+  private saveCacheToDisk(installs: JavaInstall[]): void {
+    try {
+      const payload: JavaCacheFile = {
+        version: JAVA_CACHE_VERSION,
+        scannedAt: Date.now(),
+        platform: `${process.platform}-${process.arch}`,
+        installs,
+      };
+      fs.writeFileSync(this.cacheFile(), JSON.stringify(payload, null, 2), 'utf-8');
+    } catch {}
+  }
+
+  /**
+   * Прогревает кэш Java в фоне, не блокируя caller. Безопасно вызывать
+   * многократно: повторные вызовы просто await'ят уже идущий scan.
+   * Используется при старте лаунчера, чтобы первый клик «Играть» не ждал.
+   */
+  prewarm(): Promise<JavaInstall[]> {
+    return this.list();
   }
 
   /** All directories where JDK/JRE installations typically live. */
@@ -205,52 +268,101 @@ export class JavaService {
     };
   }
 
-  /** Exhaustively scan the system. */
+  /**
+   * Полное сканирование системы. Параллельно проверяет все кандидатные
+   * директории + JAVA_HOME + первый `java` из PATH. На холодном диске
+   * занимает ~200-500ms, на тёплом ~50-150ms.
+   */
   async scan(): Promise<JavaInstall[]> {
-    const results: JavaInstall[] = [];
-    const { exe } = platformInfo();
+    // Дедуплицируем параллельные вызовы — несколько подсистем могут
+    // одновременно запросить scan на старте, нет смысла обходить FS дважды.
+    if (this.scanInFlight) return this.scanInFlight;
+    this.scanInFlight = this.doScan();
+    try {
+      return await this.scanInFlight;
+    } finally {
+      this.scanInFlight = null;
+    }
+  }
+
+  private async doScan(): Promise<JavaInstall[]> {
+    const tasks: Promise<JavaInstall | null>[] = [];
 
     // 1) JAVA_HOME
     if (process.env.JAVA_HOME) {
-      const item = await this.inspect(process.env.JAVA_HOME, false);
-      if (item) results.push(item);
+      tasks.push(this.inspect(process.env.JAVA_HOME, false));
     }
 
-    // 2) PATH — take the first `java` on it
-    try {
-      const { stdout } = await pExecFile(process.platform === 'win32' ? 'where' : 'which', ['java'], { timeout: 3000, windowsHide: true });
-      const first = stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0];
-      if (first && fs.existsSync(first)) {
-        // Resolve parent .. /bin/java -> javaHome
-        const home = path.resolve(path.dirname(first), '..');
-        const item = await this.inspect(home, false);
-        if (item) results.push(item);
-      }
-    } catch {}
+    // 2) PATH — первый `java`. Запускаем параллельно с обходом папок,
+    // чтобы 50-200ms на spawn `where` не блокировали остальное.
+    tasks.push((async () => {
+      try {
+        const { stdout } = await pExecFile(
+          process.platform === 'win32' ? 'where' : 'which',
+          ['java'],
+          { timeout: 3000, windowsHide: true },
+        );
+        const first = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
+        if (first && fs.existsSync(first)) {
+          const home = path.resolve(path.dirname(first), '..');
+          return this.inspect(home, false);
+        }
+      } catch {}
+      return null;
+    })());
 
-    // 3) Known root directories — one level deep
+    // 3) Известные корневые директории — одно- и двухуровневая глубина.
+    // Раньше это был последовательный двойной for; теперь все inspect()
+    // запускаются параллельно через Promise.all.
+    const javaRoot = this.javaRoot();
+    const javaRootKey = path.resolve(javaRoot).toLowerCase();
     for (const root of this.candidateRoots()) {
+      const managed = path.resolve(root).toLowerCase() === javaRootKey;
       for (const entry of listDirSafe(root)) {
         const full = path.join(root, entry);
-        const managed = path.resolve(root).toLowerCase() === path.resolve(this.javaRoot()).toLowerCase();
-        const item = await this.inspect(full, managed);
-        if (item) { results.push(item); continue; }
-        // Two levels deep (many distros nest once more, e.g. Microsoft/jdk-21/...)
+        tasks.push(this.inspect(full, managed));
+        // Two levels deep — Microsoft/jdk-21/, Eclipse Adoptium/jdk-17.0.x/...
         for (const subEntry of listDirSafe(full)) {
           const subFull = path.join(full, subEntry);
-          const it2 = await this.inspect(subFull, managed);
-          if (it2) results.push(it2);
+          tasks.push(this.inspect(subFull, managed));
         }
       }
     }
 
+    const settled = await Promise.all(tasks);
+    const results = settled.filter((x): x is JavaInstall => !!x);
     const out = dedupeByPath(results).sort((a, b) => b.major - a.major);
+
     this.cache = out;
+    this.cacheLoadedFromDisk = false;
+    this.saveCacheToDisk(out);
     return out;
   }
 
+  /**
+   * Возвращает список Java. Стратегия:
+   *   1. Если есть in-memory кэш — отдаём его (мгновенно).
+   *   2. Иначе пробуем persistent-кэш с диска (фильтруя удалённые пути).
+   *   3. Иначе делаем полный scan.
+   *
+   * Если persistent-кэш протух (старше 7 дней) — отдаём его сразу, но в
+   * фоне триггерим re-scan, чтобы данные подтянулись к следующему запуску.
+   */
   async list(): Promise<JavaInstall[]> {
     if (this.cache) return this.cache;
+
+    const fromDisk = this.loadCacheFromDisk();
+    if (fromDisk) {
+      this.cache = fromDisk.installs;
+      this.cacheLoadedFromDisk = true;
+
+      // Stale? — фоном пересканируем, пока пользователь играет.
+      if (Date.now() - fromDisk.scannedAt > JAVA_CACHE_FRESH_MS) {
+        this.scan().catch(() => {});
+      }
+      return this.cache;
+    }
+
     return this.scan();
   }
 
@@ -270,17 +382,35 @@ export class JavaService {
     return javaMajor >= requiredMajor;
   }
 
-  /** Find the best java for the given required major. Prefers exact match, then newer, then older. */
+  /**
+   * Find the best java for the given required major. Prefers exact match,
+   * then newer, then older.
+   *
+   * Если результат поиска по persistent-кэшу пуст — делаем форс re-scan
+   * (вдруг пользователь поставил новую Java между сессиями). Это даёт
+   * правильное поведение без бесполезного скачивания.
+   */
   async findBest(required: number): Promise<JavaInstall | null> {
-    const all = await this.list();
+    let result = this.findBestIn(await this.list(), required);
+    if (result) return result;
+    if (this.cacheLoadedFromDisk) {
+      // persistent-кэш мог быть неполным — пересканим и попробуем ещё раз.
+      const fresh = await this.scan();
+      result = this.findBestIn(fresh, required);
+      if (result) return result;
+    }
+    return null;
+  }
+
+  private findBestIn(all: JavaInstall[], required: number): JavaInstall | null {
     if (all.length === 0) return null;
-    const exact = all.find(j => j.major === required);
+    const exact = all.find((j) => j.major === required);
     if (exact) return exact;
     if (required <= 8) {
       // Only Java 8 works for LaunchWrapper-era versions
-      return all.find(j => j.major === 8) ?? null;
+      return all.find((j) => j.major === 8) ?? null;
     }
-    const greaterOrEqual = all.filter(j => j.major >= required).sort((a, b) => a.major - b.major)[0];
+    const greaterOrEqual = all.filter((j) => j.major >= required).sort((a, b) => a.major - b.major)[0];
     if (greaterOrEqual) return greaterOrEqual;
     return null;
   }
@@ -340,8 +470,11 @@ export class JavaService {
     }
     try { fs.unlinkSync(tmpFile); } catch {}
 
-    // Invalidate cache and locate the fresh install
+    // Сбрасываем кэш и находим свежераспакованную JRE через scan().
+    // scan() ВНУТРИ doScan() уже сохранит обновлённый кэш на диск, так что
+    // следующий запуск лаунчера не будет перекачивать Java заново.
     this.cache = null;
+    this.cacheLoadedFromDisk = false;
     const fresh = await this.findBest(major);
     if (!fresh) throw new Error('Java extracted but not found by scanner');
     return fresh;

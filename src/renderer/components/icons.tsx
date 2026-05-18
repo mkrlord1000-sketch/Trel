@@ -92,3 +92,92 @@ export const IconGlobe: React.FC<P> = (p) => (
     <path d="M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20z" />
   </svg>
 );
+
+/**
+ * Иконка «Скин» — стилизованный персонаж в стиле Minecraft (квадратные пропорции).
+ * Голова, тело, руки, ноги — собраны из прямоугольников, без сглаживания.
+ */
+export const IconSkin: React.FC<P> = (p) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" {...p}>
+    {/* Голова */}
+    <rect x="8" y="2" width="8" height="6" rx="0.5" />
+    {/* Тело */}
+    <rect x="9" y="9" width="6" height="7" rx="0.5" />
+    {/* Левая рука */}
+    <rect x="5" y="9" width="3" height="6" rx="0.5" />
+    {/* Правая рука */}
+    <rect x="16" y="9" width="3" height="6" rx="0.5" />
+    {/* Левая нога */}
+    <rect x="9" y="17" width="2.5" height="5" rx="0.5" />
+    {/* Правая нога */}
+    <rect x="12.5" y="17" width="2.5" height="5" rx="0.5" />
+  </svg>
+);
+
+/**
+ * Иконка «Скин не поддерживается» — стилизованный персонаж с диагональной чертой.
+ * Показывается у pre-1.6 версий, где authlib-injector неприменим.
+ */
+export const IconSkinOff: React.FC<P> = (p) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" {...p}>
+    <rect x="8" y="2" width="8" height="6" rx="0.5" />
+    <rect x="9" y="9" width="6" height="7" rx="0.5" />
+    <rect x="5" y="9" width="3" height="6" rx="0.5" />
+    <rect x="16" y="9" width="3" height="6" rx="0.5" />
+    <rect x="9" y="17" width="2.5" height="5" rx="0.5" />
+    <rect x="12.5" y="17" width="2.5" height="5" rx="0.5" />
+    {/* Перечёркивающая линия */}
+    <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+  </svg>
+);
+
+/**
+ * Иконка «Сервер» — стилизованный rack-сервер с двумя секциями и индикатором.
+ */
+export const IconServer: React.FC<P> = (p) => (
+  <svg {...base} {...p}>
+    <rect x="3" y="4" width="18" height="7" rx="1.5" />
+    <rect x="3" y="13" width="18" height="7" rx="1.5" />
+    <line x1="6.5" y1="7.5" x2="6.5" y2="7.5" strokeWidth="2.4" />
+    <line x1="6.5" y1="16.5" x2="6.5" y2="16.5" strokeWidth="2.4" />
+    <line x1="10" y1="7.5" x2="17" y2="7.5" />
+    <line x1="10" y1="16.5" x2="17" y2="16.5" />
+  </svg>
+);
+
+/**
+ * Иконка «Стоп» — квадратная заливка для кнопки остановки сервера.
+ */
+export const IconStop: React.FC<P> = (p) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" {...p}>
+    <rect x="6" y="6" width="12" height="12" rx="1.5" />
+  </svg>
+);
+
+/**
+ * Иконка «Терминал» — для секции консоли сервера.
+ */
+export const IconTerminal: React.FC<P> = (p) => (
+  <svg {...base} {...p}>
+    <polyline points="4 17 10 11 4 5" />
+    <line x1="12" y1="19" x2="20" y2="19" />
+  </svg>
+);
+
+export const IconPlus: React.FC<P> = (p) => (
+  <svg {...base} {...p}>
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
+
+/**
+ * Иконка «Скопировать» — две перекрывающиеся карточки. Используется на кнопках
+ * «Скопировать адрес сервера», ник, и т.п.
+ */
+export const IconCopy: React.FC<P> = (p) => (
+  <svg {...base} {...p}>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+  </svg>
+);

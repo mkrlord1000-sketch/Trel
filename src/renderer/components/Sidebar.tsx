@@ -1,7 +1,8 @@
 import React from 'react';
 import type { Page } from '../App';
 import type { MinecraftAccount } from '../../shared/types';
-import { IconPlay, IconCube, IconCheck, IconUser, IconSettings, IconGlobe, IconArchive } from './icons';
+import { IconPlay, IconCube, IconCheck, IconUser, IconSettings, IconGlobe, IconArchive, IconSkin, IconServer } from './icons';
+import { SkinFace } from './SkinPreview';
 
 interface Props {
   page: Page;
@@ -21,9 +22,11 @@ const PRIMARY: NavItem[] = [
   { id: 'installed', label: 'Моё',        Icon: IconCheck },
   { id: 'worlds',    label: 'Миры',       Icon: IconGlobe },
   { id: 'content',   label: 'Контент',    Icon: IconArchive },
+  { id: 'servers',   label: 'Серверы',    Icon: IconServer },
 ];
 const SECONDARY: NavItem[] = [
   { id: 'accounts', label: 'Аккаунты',  Icon: IconUser },
+  { id: 'skin',     label: 'Скин',      Icon: IconSkin },
   { id: 'settings', label: 'Настройки', Icon: IconSettings },
 ];
 
@@ -48,7 +51,12 @@ export const Sidebar: React.FC<Props> = ({ page, onChange, activeAccount }) => {
       <div className="spacer" />
       {activeAccount && (
         <div className="account-chip">
-          <div className="avatar-sm">{activeAccount.name.charAt(0).toUpperCase()}</div>
+          <SkinFace
+            skin={activeAccount.skin ?? null}
+            size={32}
+            fallbackName={activeAccount.name}
+            className="avatar-sm"
+          />
           <div className="info">
             <div className="name">{activeAccount.name}</div>
             <div className="role">Гость</div>

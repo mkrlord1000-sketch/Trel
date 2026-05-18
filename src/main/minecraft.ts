@@ -3,9 +3,13 @@ import * as path from 'node:path';
 import { BrowserWindow } from 'electron';
 import { launch, LaunchOption } from '@xmcl/core';
 import { VersionInfo, LaunchOptions } from '../shared/types';
+import { supportsCustomSkin } from '../shared/skin-support';
 import { JavaService } from './java';
 import { MinecraftInstaller } from './installer';
-import { LoaderService, LoaderType, LoaderVersion } from './loaders';
+import { LoaderService, LoaderType } from './loaders';
+import { WorldService } from './worlds';
+import { SkinServer } from './skin-server';
+import { AuthlibInjector } from './authlib';
 
 export interface InstalledVersionDetail {
   /** Raw folder name (e.g. "1.20.1" or "1.20.1-forge-47.2.0"). */
@@ -19,6 +23,27 @@ export interface InstalledVersionDetail {
 }
 
 const CONTENT_FOLDERS = ['mods', 'shaderpacks', 'resourcepacks', 'texturepacks'] as const;
+
+/**
+ * Pre-Classic / Classic / Indev / Infdev / ранний Alpha — версии, которые
+ * вместо папки `saves/<world>` пишут одиночные world-файлы прямо в gameDir
+ * (или в gameDir/.minecraft при системной подмене APPDATA):
+ *   - rd-* / c0.*       → `level.dat`
+ *   - in-* (Indev)      → `mclevel.dat`
+ *   - inf-* (Infdev)    → `<имя>.mclevel` (в saves/) или `level.dat`
+ *   - a1.0.*, a1.1.0    → `level.dat` (старый формат, до a1.1.1)
+ *
+ * При полном (deep) удалении такой версии нужно зачистить loose-файлы,
+ * иначе при следующем запуске любой совместимой старой версии мир
+ * «воскреснет» сам. WorldService.wipeAllLooseLevelDat() покрывает все
+ * три формата.
+ *
+ * Совпадает только с теми префиксами, у которых формат сохранения =
+ * одиночный файл. С beta/release не пересекается.
+ */
+function isPreClassicVersionId(id: string): boolean {
+  return /^(rd-|c0\.|in-|inf-|a1\.0\.|a1\.1\.0)/i.test(id);
+}
 
 /**
  * Detect loader + base MC from a versions folder name. Best-effort heuristic,
@@ -63,16 +88,36 @@ function detectLoaderFromId(
 export class MinecraftService {
   private installer: MinecraftInstaller;
   public loaders: LoaderService;
+  private worlds: WorldService;
+  /** Shared между клиентом и серверами — авторизация и скины через один mock. */
+  private skinServer: SkinServer;
+  private authlib: AuthlibInjector;
+  private launcherDir: string;
+  /** Идентификаторы версий, для которых сейчас выполняется launch — защита от двойного клика. */
+  private launchingVersions = new Set<string>();
 
-  constructor(private gameDir: string, private java: JavaService) {
+  constructor(
+    private gameDir: string,
+    private java: JavaService,
+    worlds?: WorldService,
+    launcherDir?: string,
+    skinServer?: SkinServer,
+    authlib?: AuthlibInjector,
+  ) {
     this.installer = new MinecraftInstaller(gameDir);
     this.loaders = new LoaderService(gameDir, java, this.installer);
+    this.worlds = worlds ?? new WorldService(gameDir);
+    // launcherDir для authlib-injector кэша. Если не передан — кладём рядом с gameDir.
+    this.launcherDir = launcherDir ?? path.dirname(gameDir);
+    this.skinServer = skinServer ?? new SkinServer();
+    this.authlib = authlib ?? new AuthlibInjector(this.launcherDir);
   }
 
   setGameDir(dir: string) {
     this.gameDir = dir;
     this.installer.setGameDir(dir);
     this.loaders.setGameDir(dir);
+    this.worlds.setGameDir(dir);
   }
 
   async fetchVersions(): Promise<VersionInfo[]> {
@@ -80,7 +125,21 @@ export class MinecraftService {
     return list as VersionInfo[];
   }
 
-  /** Return the IDs of versions already downloaded (client jar is present). */
+  /**
+   * Возвращает ID установленных версий: тех, у которых на диске есть
+   * собственный клиентский jar в `versions/<id>/<id>.jar`.
+   *
+   * Раньше считали «jar или json» — это давало false positives после
+   * установки лоадеров: parent ваниль (`1.21.11`) хранится как одна
+   * папка с одним только JSON (для inheritsFrom-резолва), без jar.
+   * После flatten она удаляется, но fetchVersionJson может пересоздать
+   * JSON-файл при любом обращении к Forge-профилю — и в списке вылазит
+   * «третья версия», которой реально нет.
+   *
+   * Для loader-профилей `flattenLoaderProfile()` копирует jar в их папку,
+   * так что и Fabric/Quilt-инстансы (которые исходно идут как inherits-only)
+   * после flatten корректно проходят эту проверку.
+   */
   installedVersionIds(): string[] {
     const versionsDir = path.join(this.gameDir, 'versions');
     if (!fs.existsSync(versionsDir)) return [];
@@ -88,10 +147,7 @@ export class MinecraftService {
     for (const entry of fs.readdirSync(versionsDir)) {
       const dir = path.join(versionsDir, entry);
       const jar = path.join(dir, `${entry}.jar`);
-      const json = path.join(dir, `${entry}.json`);
-      // Loader profiles (Fabric/Quilt) ship only a JSON and inherit the jar
-      // from the parent vanilla install — count those as installed too.
-      if (fs.existsSync(jar) || fs.existsSync(json)) out.push(entry);
+      if (fs.existsSync(jar)) out.push(entry);
     }
     return out;
   }
@@ -134,10 +190,42 @@ export class MinecraftService {
    * flatten — это убирает «двойные» папки (lоадер + родительская ваниль),
    * сохраняя содержимое (mods/saves/...) внутри лоадера.
    * Идемпотентно — после первого прохода ничего не делает.
+   *
+   * Дополнительно подчищает orphan-папки ванили: папки в `versions/<id>/`
+   * с одним JSON и без JAR, которые соответствуют base-MC уже-установленного
+   * лоадера. Такие «призраки» появлялись когда installer резолвил inheritsFrom
+   * и создавал JSON-файл, но flatten их не успевал убрать. UI их видел как
+   * отдельную «третью» версию.
    */
   consolidateInstalls(): void {
     for (const d of this.installedDetailed()) {
       if (d.loader) this.loaders.flattenLoaderProfile(d.id);
+    }
+    this.cleanupOrphanedParents();
+  }
+
+  /**
+   * Удаляет папки `versions/<id>/` где:
+   *  - нет собственного JAR
+   *  - и есть установленный лоадер с baseMc === id
+   * Это и есть «призрак» родительской ванили после flatten.
+   */
+  private cleanupOrphanedParents(): void {
+    const versionsRoot = path.join(this.gameDir, 'versions');
+    if (!fs.existsSync(versionsRoot)) return;
+    // Соберём базы тех версий, для которых есть установленный лоадер.
+    const installedLoaders = this.installedVersionIds()
+      .map((id) => this.detailFor(id))
+      .filter((d) => d.loader);
+    const moddedBases = new Set(installedLoaders.map((d) => d.baseMc));
+
+    for (const entry of fs.readdirSync(versionsRoot)) {
+      if (!moddedBases.has(entry)) continue;
+      const dir = path.join(versionsRoot, entry);
+      const jar = path.join(dir, entry + '.jar');
+      if (fs.existsSync(jar)) continue; // Это нормальная установка ванили — не трогаем.
+      // Папка есть, JAR нет, для этой базы есть лоадер → orphan.
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     }
   }
 
@@ -217,6 +305,17 @@ export class MinecraftService {
         removed.push(p);
       }
     }
+    // Pre-Classic / Classic / Indev / rd-* пишут мир как одинокий level.dat
+    // в корень APPDATA/.minecraft (у нас → gameDir или gameDir/.minecraft).
+    // versions/<id>/saves для них не существует, поэтому без явной зачистки
+    // мир остаётся на диске и при следующем запуске старой версии
+    // «воскресает». Чистим только если других pre-classic версий не осталось,
+    // чтобы не задеть мир, общий между несколькими rd-*.
+    if (isPreClassicVersionId(versionId) && !this.hasOtherPreClassicInstalled(versionId)) {
+      try {
+        for (const file of this.worlds.wipeAllLooseLevelDat()) removed.push(file);
+      } catch {}
+    }
     // Clean up orphaned libraries/assets only if no other versions exist
     const versionsRoot = path.join(this.gameDir, 'versions');
     const hasOther = fs.existsSync(versionsRoot) && fs.readdirSync(versionsRoot).some((e) => {
@@ -233,6 +332,29 @@ export class MinecraftService {
       }
     }
     return { removed };
+  }
+
+  /**
+   * Проверяет, остались ли установленные pre-classic версии помимо `excludeId`.
+   * Используется в uninstallDeep, чтобы не зачистить общий loose level.dat,
+   * если у пользователя установлено несколько rd-* / c0.* версий.
+   */
+  private hasOtherPreClassicInstalled(excludeId: string): boolean {
+    const versionsRoot = path.join(this.gameDir, 'versions');
+    if (!fs.existsSync(versionsRoot)) return false;
+    try {
+      for (const entry of fs.readdirSync(versionsRoot)) {
+        if (entry === excludeId) continue;
+        if (!isPreClassicVersionId(entry)) continue;
+        // Должна быть реально установлена (jar или json)
+        const dir = path.join(versionsRoot, entry);
+        if (fs.existsSync(path.join(dir, entry + '.jar')) ||
+            fs.existsSync(path.join(dir, entry + '.json'))) {
+          return true;
+        }
+      }
+    } catch {}
+    return false;
   }
 
   gameFolder(): string {
@@ -258,70 +380,125 @@ export class MinecraftService {
   }
 
   /**
-   * Wire up content folders for the given version so that the game (which
-   * always reads gameDir/<mods|shaderpacks|...>) actually sees the per-version
-   * content. We create NTFS junctions from gameDir/<sub> -> versions/<id>/<sub>.
-   * On first run, any existing real folder in gameDir gets its contents moved
-   * into the version folder, so the user doesn't lose mods they already placed.
+   * Wire up content folders for the given version so the game (which always
+   * reads gameDir/<mods|shaderpacks|...>) actually sees this version's content.
+   *
+   * Раньше использовали NTFS junction → gameDir/mods был линком. Forge на JDK 21
+   * при старте делает `Files.createDirectories(gameDir/mods)` и на junction
+   * валится `FileAlreadyExistsException` — поэтому теперь стратегия другая:
+   *   gameDir/<sub> — обычная папка (Forge её спокойно видит)
+   *   её содержимое — жёсткие ссылки на файлы из versions/<id>/<sub>
+   * Жёсткая ссылка на файл с точки зрения NTFS — это тот же inode, никакого
+   * дублирования места, и игра видит её как обычный файл.
    */
   linkContentFolders(versionId: string): void {
     const versionDir = this.versionFolder(versionId);
     if (!fs.existsSync(versionDir)) return;
     for (const sub of CONTENT_FOLDERS) {
-      this.linkOneContentFolder(versionDir, sub);
+      this.mirrorOneContentFolder(versionDir, sub);
     }
   }
 
-  private linkOneContentFolder(versionDir: string, sub: string): void {
+  /**
+   * Зеркалит содержимое versions/<id>/<sub> в gameDir/<sub> через hard-links.
+   * Если в gameDir/<sub> ранее был junction (от старой версии лаунчера) —
+   * аккуратно удаляем его (это «висячий» entry, не сама папка).
+   * Если в gameDir/<sub> уже лежат реальные файлы — миграция в version-folder.
+   */
+  private mirrorOneContentFolder(versionDir: string, sub: string): void {
     const target = path.join(this.gameDir, sub);
     const source = path.join(versionDir, sub);
 
+    // Per-version папка — всегда есть.
     try { fs.mkdirSync(source, { recursive: true }); } catch {}
 
-    if (fs.existsSync(target)) {
-      let isLink = false;
-      try { isLink = fs.lstatSync(target).isSymbolicLink(); } catch {}
+    // Если в gameDir/<sub> сейчас junction (legacy-режим) — снимаем его
+    // как linkfile. На NTFS junction отображается как symlink.
+    let isLink = false;
+    try { isLink = fs.lstatSync(target).isSymbolicLink(); } catch {}
+    if (isLink) {
+      try { fs.unlinkSync(target); }
+      catch { try { fs.rmSync(target, { recursive: true, force: true }); } catch {} }
+    }
 
-      if (isLink) {
-        // Already a junction — check if it points to the right place.
-        try {
-          const current = fs.readlinkSync(target);
-          if (path.resolve(current) === path.resolve(source)) return;
-        } catch {}
-        // Wrong target or unreadable — drop it.
-        try { fs.unlinkSync(target); }
-        catch { try { fs.rmSync(target, { recursive: true, force: true }); } catch {} }
-      } else {
-        // Real folder — migrate any contents into the version folder.
-        try {
-          for (const entry of fs.readdirSync(target)) {
-            const from = path.join(target, entry);
-            const to = path.join(source, entry);
-            if (fs.existsSync(to)) continue; // don't overwrite per-version files
-            try {
-              fs.renameSync(from, to);
-            } catch {
-              // Cross-device or locked — fall back to copy+remove.
-              try {
-                fs.cpSync(from, to, { recursive: true });
-                fs.rmSync(from, { recursive: true, force: true });
-              } catch {}
-            }
+    // Если в gameDir/<sub> уже лежит реальная папка с файлами от прошлого
+    // запуска другой версии — переносим её содержимое в version-folder этой
+    // версии (один раз), потом будем зеркалить только текущей версии.
+    // Делаем это аккуратно: НЕ трогаем уже зазеркаленные файлы (hardlinks с
+    // тем же содержимым считаются «уже существующими» в version dir и
+    // пропускаются). Перенос делаем для НЕ-зеркал — то есть когда target
+    // содержит файлы, которых нет в source.
+    if (fs.existsSync(target) && !isLink) {
+      try {
+        // На первом запуске после старого junction-режима target может
+        // уже быть пустой папкой — это ок, пропустим. Если же в нём что-то
+        // есть и оно не совпадает с source — переносим в source.
+        for (const entry of fs.readdirSync(target)) {
+          const from = path.join(target, entry);
+          const to = path.join(source, entry);
+          if (fs.existsSync(to)) continue;
+          try { fs.renameSync(from, to); }
+          catch {
+            try { fs.cpSync(from, to, { recursive: true }); fs.rmSync(from, { recursive: true, force: true }); } catch {}
           }
-          fs.rmSync(target, { recursive: true, force: true });
+        }
+      } catch {}
+    }
+
+    // Создаём gameDir/<sub> как обычную папку.
+    try { fs.mkdirSync(target, { recursive: true }); } catch {}
+
+    // Чистим target от записей, которых уже нет в source (другие версии,
+    // удалённые моды и т.д.). Реальные файлы НЕ трогаем — только удаляем
+    // hard-links: если у файла больше 1 ссылки, безопасно удалить эту.
+    try {
+      const sourceEntries = new Set(fs.readdirSync(source));
+      for (const entry of fs.readdirSync(target)) {
+        if (sourceEntries.has(entry)) continue;
+        const tp = path.join(target, entry);
+        try {
+          const st = fs.lstatSync(tp);
+          if (st.isFile() && st.nlink > 1) {
+            // Это hardlink — наш зеркальный артефакт. Удаляем.
+            fs.unlinkSync(tp);
+          }
+          // Если nlink == 1 (единственная ссылка) или это директория —
+          // оставляем: пользователь мог положить что-то руками.
         } catch {}
       }
-    }
+    } catch {}
 
+    // Зеркалим текущие файлы из version-folder в gameDir/<sub>.
     try {
-      fs.symlinkSync(source, target, 'junction');
-    } catch (e) {
-      // Junctions only work on NTFS / Windows; on other systems we just leave
-      // the real per-version folder and the user can use it directly.
-      // Not fatal — the game will simply not see per-version content.
-      // eslint-disable-next-line no-console
-      console.warn(`linkContentFolders: failed to create junction for ${sub}:`, e);
-    }
+      for (const entry of fs.readdirSync(source)) {
+        const sp = path.join(source, entry);
+        const tp = path.join(target, entry);
+        let sStat: fs.Stats;
+        try { sStat = fs.statSync(sp); } catch { continue; }
+        if (!sStat.isFile()) continue; // моды/паки — это файлы (.jar/.zip), вложенные папки игнорируем
+
+        // Если target уже существует — проверяем что это та же ссылка.
+        if (fs.existsSync(tp)) {
+          try {
+            const tStat = fs.statSync(tp);
+            // Один и тот же inode на NTFS = одинаковые ino. Если совпадает,
+            // ничего делать не надо.
+            if (tStat.ino && sStat.ino && tStat.ino === sStat.ino) continue;
+            // Иначе — пользовательский файл с тем же именем. Не перезаписываем,
+            // чтобы не потерять чужой.
+            continue;
+          } catch {}
+        }
+
+        try {
+          fs.linkSync(sp, tp);
+        } catch {
+          // Если hard-link не получился (например, разные тома), копируем.
+          // Это допустимый fallback — лишь чуть-чуть места.
+          try { fs.copyFileSync(sp, tp); } catch {}
+        }
+      }
+    } catch {}
   }
 
   async install(versionId: string, win: BrowserWindow) {
@@ -350,7 +527,36 @@ export class MinecraftService {
     return { path: fresh.path, reason: `downloaded Java ${requiredMajor}` };
   }
 
+  /** Обновляет список аккаунтов в локальном skin-сервере. Вызывается из ipc после изменений в accounts.json. */
+  updateSkinAccounts(list: import('../shared/types').MinecraftAccount[]): void {
+    this.skinServer.setAccounts(list);
+  }
+
+  /**
+   * Поддерживает ли версия Minecraft authlib-injector. См. shared/skin-support.ts —
+   * предикат единый для main и renderer, чтобы UI и backend всегда были
+   * согласованы по списку версий «без скинов».
+   */
+  private supportsAuthlibInjector(versionId: string, baseMc: string | undefined): boolean {
+    return supportsCustomSkin(versionId, baseMc);
+  }
+
   async launch(opts: LaunchOptions, win: BrowserWindow, userJavaPath?: string): Promise<number> {
+    // Защита от двойного клика «Играть»: если уже идёт запуск той же
+    // версии, отбиваем второй вызов чтобы не плодить процессы и не
+    // конфликтовать на FS-операциях (linkContentFolders, content folders).
+    if (this.launchingVersions.has(opts.versionId)) {
+      throw new Error('Запуск уже идёт — подождите');
+    }
+    this.launchingVersions.add(opts.versionId);
+    try {
+      return await this.doLaunch(opts, win, userJavaPath);
+    } finally {
+      this.launchingVersions.delete(opts.versionId);
+    }
+  }
+
+  private async doLaunch(opts: LaunchOptions, win: BrowserWindow, userJavaPath?: string): Promise<number> {
     const versionDir = path.join(this.gameDir, 'versions', opts.versionId);
     const clientJar = path.join(versionDir, opts.versionId + '.jar');
     const jsonPath = path.join(versionDir, opts.versionId + '.json');
@@ -379,14 +585,48 @@ export class MinecraftService {
       requiredMajor = ver.javaVersion?.majorVersion ?? 8;
     }
 
-    const { path: javaPath, reason } = await this.resolveJava(requiredMajor, userJavaPath, win);
-    win.webContents.send('minecraft:log', `[launcher] Using Java: ${javaPath} (${reason})\n`);
+    // Java-резолв и подготовка content-папок никак не связаны — пусть бегут
+    // параллельно. На горячем пути (кэш Java тёплый) выигрыш ~10-30ms.
+    const javaPromise = this.resolveJava(requiredMajor, userJavaPath, win);
 
     // Привязываем content-папки (mods/shaderpacks/...) к текущей версии через
     // NTFS junction-ы, чтобы каждая версия видела свои моды/паки, а игра при
     // этом продолжала читать gameDir/<sub>. См. linkContentFolders.
     this.ensureContentFolders(opts.versionId);
     this.linkContentFolders(opts.versionId);
+
+    // ─── authlib-injector: кастомный скин в игре ──────────────────────────
+    // Параллельно с резолвом Java стартуем skin-сервер и качаем агент.
+    // Если что-то упало — просто запустим без агента (скин не будет виден,
+    // но игра запустится).
+    let authlibArgs: string[] = [];
+    let baseMc: string | undefined;
+    try {
+      const json = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+      baseMc = json.inheritsFrom ?? undefined;
+    } catch {}
+    const useAuthlib = !!opts.account.skin && this.supportsAuthlibInjector(opts.versionId, baseMc);
+    if (useAuthlib) {
+      try {
+        // НЕ делаем setAccounts([opts.account]) — это бы стёр остальных
+        // (например, если параллельно запущен сервер). skinServer держит
+        // все аккаунты, обновляемые через ipc.refreshSkinServer; здесь
+        // только запускаем сервер и подключаем агент.
+        const [apiUrl, agentPath] = await Promise.all([
+          this.skinServer.start(),
+          this.authlib.ensure(),
+        ]);
+        authlibArgs = [
+          `-javaagent:${agentPath}=${apiUrl}`,
+        ];
+        win.webContents.send('minecraft:log', `[launcher] authlib-injector активен (${apiUrl})\n`);
+      } catch (e) {
+        win.webContents.send('minecraft:log', `[launcher] authlib-injector недоступен (${(e as Error).message}) — играем без кастомного скина\n`);
+      }
+    }
+
+    const { path: javaPath, reason } = await javaPromise;
+    win.webContents.send('minecraft:log', `[launcher] Using Java: ${javaPath} (${reason})\n`);
 
     // Старые версии (rd-*, c0.*, in-*, inf-*, alpha) игнорируют gamePath и
     // пишут мир в зависимости от ОС:
@@ -418,6 +658,7 @@ export class MinecraftService {
       extraJVMArgs: [
         `-Duser.home=${this.gameDir}`,
         `-Duser.dir=${this.gameDir}`,
+        ...authlibArgs,
       ],
       // Главное: подменяем переменные окружения, которые читают legacy-версии
       extraExecOption: {

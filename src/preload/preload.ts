@@ -69,6 +69,34 @@ export interface InstalledVersionDetail {
   loaderVersion: string | null;
 }
 
+export type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
+
+export interface ServerProperties {
+  motd: string;
+  serverPort: number;
+  maxPlayers: number;
+  gamemode: 'survival' | 'creative' | 'adventure' | 'spectator';
+  difficulty: 'peaceful' | 'easy' | 'normal' | 'hard';
+  pvp: boolean;
+  onlineMode: boolean;
+  whiteList: boolean;
+  spawnProtection: number;
+}
+
+export interface ServerInstance {
+  id: string;
+  name: string;
+  versionId: string;
+  createdAt: string;
+  memoryMb: number;
+  properties: ServerProperties;
+}
+
+export interface ServerCreateProgress {
+  stage: string;
+  percent: number;
+}
+
 const api = {
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
@@ -84,6 +112,11 @@ const api = {
     list: (): Promise<MinecraftAccount[]> => ipcRenderer.invoke('accounts:list'),
     addGuest: (name: string): Promise<MinecraftAccount> => ipcRenderer.invoke('accounts:addGuest', name),
     remove: (uuid: string): Promise<MinecraftAccount[]> => ipcRenderer.invoke('accounts:remove', uuid),
+    setSkin: (uuid: string, dataUrl: string, model: 'classic' | 'slim'): Promise<MinecraftAccount> =>
+      ipcRenderer.invoke('accounts:setSkin', uuid, dataUrl, model),
+    removeSkin: (uuid: string): Promise<MinecraftAccount> =>
+      ipcRenderer.invoke('accounts:removeSkin', uuid),
+    pickSkinFile: (): Promise<string | null> => ipcRenderer.invoke('accounts:pickSkinFile'),
   },
   java: {
     list: (): Promise<JavaInstallInfo[]> => ipcRenderer.invoke('java:list'),
@@ -137,6 +170,39 @@ const api = {
       return () => ipcRenderer.removeListener('updater:state', listener);
     },
   },
+  servers: {
+    list: (): Promise<ServerInstance[]> => ipcRenderer.invoke('servers:list'),
+    statuses: (): Promise<Record<string, ServerStatus>> => ipcRenderer.invoke('servers:statuses'),
+    logBuffer: (id: string): Promise<string[]> => ipcRenderer.invoke('servers:logBuffer', id),
+    create: (input: { name: string; versionId: string; memoryMb: number; properties?: Partial<ServerProperties> }): Promise<ServerInstance> =>
+      ipcRenderer.invoke('servers:create', input),
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('servers:delete', id),
+    start: (id: string): Promise<void> => ipcRenderer.invoke('servers:start', id),
+    stop: (id: string): Promise<void> => ipcRenderer.invoke('servers:stop', id),
+    sendCommand: (id: string, command: string): Promise<void> => ipcRenderer.invoke('servers:sendCommand', id, command),
+    setProperties: (id: string, patch: Partial<ServerProperties>): Promise<ServerInstance> =>
+      ipcRenderer.invoke('servers:setProperties', id, patch),
+    rename: (id: string, name: string): Promise<ServerInstance> => ipcRenderer.invoke('servers:rename', id, name),
+    setMemory: (id: string, memoryMb: number): Promise<ServerInstance> => ipcRenderer.invoke('servers:setMemory', id, memoryMb),
+    openFolder: (id: string): Promise<string> => ipcRenderer.invoke('servers:openFolder', id),
+    connectAddresses: (id: string): Promise<{ label: string; host: string; port: number }[]> =>
+      ipcRenderer.invoke('servers:connectAddresses', id),
+    onLog: (cb: (id: string, line: string) => void) => {
+      const listener = (_: unknown, payload: { id: string; line: string }) => cb(payload.id, payload.line);
+      ipcRenderer.on('servers:log', listener);
+      return () => ipcRenderer.removeListener('servers:log', listener);
+    },
+    onStatus: (cb: (id: string, status: ServerStatus) => void) => {
+      const listener = (_: unknown, payload: { id: string; status: ServerStatus }) => cb(payload.id, payload.status);
+      ipcRenderer.on('servers:status', listener);
+      return () => ipcRenderer.removeListener('servers:status', listener);
+    },
+    onCreateProgress: (cb: (p: ServerCreateProgress) => void) => {
+      const listener = (_: unknown, p: ServerCreateProgress) => cb(p);
+      ipcRenderer.on('servers:createProgress', listener);
+      return () => ipcRenderer.removeListener('servers:createProgress', listener);
+    },
+  },
   minecraft: {
     versions: (): Promise<VersionInfo[]> => ipcRenderer.invoke('minecraft:versions'),
     installed: (): Promise<string[]> => ipcRenderer.invoke('minecraft:installed'),
@@ -144,7 +210,7 @@ const api = {
     install: (versionId: string): Promise<boolean> => ipcRenderer.invoke('minecraft:install', versionId),
     uninstall: (versionId: string): Promise<boolean> => ipcRenderer.invoke('minecraft:uninstall', versionId),
     uninstallDeep: (versionId: string): Promise<{ removed: string[] }> => ipcRenderer.invoke('minecraft:uninstallDeep', versionId),
-    revertToVanilla: (baseMc: string): Promise<{ removed: string[] }> =>
+    revertToVanilla: (baseMc: string): Promise<{ removed: string[]; reinstalledBase?: boolean; settings?: LauncherSettings }> =>
       ipcRenderer.invoke('minecraft:revertToVanilla', baseMc),
     openFolder: (kind: 'game' | 'version', versionId?: string): Promise<string> =>
       ipcRenderer.invoke('minecraft:openFolder', kind, versionId),

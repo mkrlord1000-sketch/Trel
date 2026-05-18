@@ -6,3 +6,5 @@ release/
 *.log
 .DS_Store
 .env
+# Временные артефакты при компиляции standalone скриптов через tsc --outDir
+scripts/.tmp/

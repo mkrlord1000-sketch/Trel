@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { LauncherSettings, MinecraftAccount, VersionInfo } from '../../shared/types';
 import type { InstalledVersionDetail, LoaderType } from '../../preload/preload';
-import { IconPlay, IconTrash, IconFolder, IconCube, IconArrow, IconRefresh } from '../components/icons';
+import { IconPlay, IconTrash, IconFolder, IconCube, IconArrow, IconRefresh, IconSkinOff } from '../components/icons';
 import { useDialog } from '../components/Dialog';
 import { LoaderInstallDialog } from '../components/LoaderInstallDialog';
+import { supportsCustomSkin } from '../../shared/skin-support';
 
 interface Props {
   settings: LauncherSettings;
@@ -74,6 +75,7 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
     } catch (e) {
       setStatus('Ошибка: ' + (e as Error).message);
     } finally {
+      // Снимаем busy сразу: launch отдаёт PID при старте, не при завершении игры.
       setBusyId(null);
     }
   };
@@ -103,6 +105,12 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
     } else {
       await window.api.minecraft.uninstall(id);
     }
+    // Если удалили текущую «активную» версию — главная не должна показывать
+    // её как выбранную. Бэкенд уже сбросил это в settings.json, но рендерер
+    // держит копию в памяти — синхронизируем явно.
+    if (settings.lastVersionId === id) {
+      onSettingsChange({ ...settings, lastVersionId: '' });
+    }
     setStatus('Удалено: ' + id);
     refresh();
   };
@@ -125,12 +133,15 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
       cancelValue: 'cancel',
     });
     if (choice !== 'ok') return;
-    const { removed } = await window.api.minecraft.revertToVanilla(baseMc);
-    setStatus(removed.length > 0
-      ? `Удалено: ${removed.join(', ')}`
+    const result = await window.api.minecraft.revertToVanilla(baseMc);
+    setStatus(result.removed.length > 0
+      ? `Удалено: ${result.removed.join(', ')}`
       : 'Лоадеров не было.');
-    // если активная была одной из удалённых — сбросим на ванильную
-    if (settings.lastVersionId && removed.includes(settings.lastVersionId)) {
+    // Backend сам обновил lastVersionId — берём из возвращённых settings,
+    // чтобы UI и settings.json не разъезжались.
+    if (result.settings) {
+      onSettingsChange(result.settings);
+    } else if (settings.lastVersionId && result.removed.includes(settings.lastVersionId)) {
       onSettingsChange({ ...settings, lastVersionId: baseMc });
     }
     refresh();
@@ -150,10 +161,14 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
       cancelValue: 'cancel',
     });
     if (choice !== 'ok') return;
-    for (const d of details) {
-      try { await window.api.minecraft.uninstall(d.id); } catch {}
+    const ids = details.map((d) => d.id);
+    for (const id of ids) {
+      try { await window.api.minecraft.uninstall(id); } catch {}
     }
-    setStatus(`Удалено: ${details.length} версий`);
+    if (settings.lastVersionId && ids.includes(settings.lastVersionId)) {
+      onSettingsChange({ ...settings, lastVersionId: '' });
+    }
+    setStatus(`Удалено: ${ids.length} версий`);
     refresh();
   };
 
@@ -213,6 +228,11 @@ export const InstalledPage: React.FC<Props> = ({ settings, account, onSettingsCh
                     )}
                     {it.releaseTime && (
                       <span className="chip">{new Date(it.releaseTime).toLocaleDateString('ru-RU')}</span>
+                    )}
+                    {!supportsCustomSkin(it.id, it.baseMc) && (
+                      <span className="chip warn" title="Кастомные скины не поддерживаются на pre-1.6 версиях">
+                        <IconSkinOff /> без скинов
+                      </span>
                     )}
                   </div>
                   <div className="inst-card-actions">

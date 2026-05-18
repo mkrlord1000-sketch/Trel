@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
 import type { MinecraftAccount } from '../../shared/types';
-import { IconTrash } from '../components/icons';
+import { IconTrash, IconSkin } from '../components/icons';
+import { SkinFace } from '../components/SkinPreview';
 
 interface Props {
   accounts: MinecraftAccount[];
   activeUuid: string | null;
   onSelect: (uuid: string) => void;
   onChange: () => void;
+  onGoToSkin: () => void;
 }
 
-export const AccountsPage: React.FC<Props> = ({ accounts, activeUuid, onSelect, onChange }) => {
+export const AccountsPage: React.FC<Props> = ({ accounts, activeUuid, onSelect, onChange, onGoToSkin }) => {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
@@ -79,11 +81,18 @@ export const AccountsPage: React.FC<Props> = ({ accounts, activeUuid, onSelect, 
                 className={'account-tile' + (activeUuid === a.uuid ? ' active' : '')}
                 onClick={() => onSelect(a.uuid)}
               >
-                <div className="avatar">{a.name.charAt(0).toUpperCase()}</div>
+                <SkinFace skin={a.skin ?? null} size={40} fallbackName={a.name} className="account-avatar" />
                 <div className="info">
                   <div className="name">{a.name}</div>
                   <div className="role">Гость{activeUuid === a.uuid ? ' · активный' : ''}</div>
                 </div>
+                <button
+                  className="icon-btn"
+                  onClick={(e) => { e.stopPropagation(); onSelect(a.uuid); onGoToSkin(); }}
+                  title="Скин"
+                >
+                  <IconSkin />
+                </button>
                 <button
                   className="icon-btn"
                   onClick={(e) => { e.stopPropagation(); remove(a.uuid); }}

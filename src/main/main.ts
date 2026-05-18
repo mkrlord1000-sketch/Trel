@@ -56,14 +56,23 @@ function ensureLauncherDir(): string {
       fs.renameSync(oldDir, newDir);
       // Внутри settings.json gameDir мог хранить полный путь со старым именем —
       // переписываем, чтобы лаунчер дальше работал с обновлённым путём.
+      // Сравнение case-insensitive: на Windows пути `C:\Users\...` и
+      // `c:\users\...` указывают на одно место, а простой includes
+      // регистро-чувствителен и пропускал такие случаи.
       const settingsFile = path.join(newDir, 'settings.json');
       if (fs.existsSync(settingsFile)) {
         try {
           const raw = fs.readFileSync(settingsFile, 'utf-8');
           const parsed = JSON.parse(raw);
-          if (typeof parsed.gameDir === 'string' && parsed.gameDir.includes(oldDir)) {
-            parsed.gameDir = parsed.gameDir.split(oldDir).join(newDir);
-            fs.writeFileSync(settingsFile, JSON.stringify(parsed, null, 2), 'utf-8');
+          if (typeof parsed.gameDir === 'string') {
+            const lcDir = parsed.gameDir.toLowerCase();
+            const lcOld = oldDir.toLowerCase();
+            if (lcDir.includes(lcOld)) {
+              const idx = lcDir.indexOf(lcOld);
+              // Заменяем сохраняя регистр окружающих символов: берём префикс/суффикс из оригинала
+              parsed.gameDir = parsed.gameDir.slice(0, idx) + newDir + parsed.gameDir.slice(idx + oldDir.length);
+              fs.writeFileSync(settingsFile, JSON.stringify(parsed, null, 2), 'utf-8');
+            }
           }
         } catch {}
       }

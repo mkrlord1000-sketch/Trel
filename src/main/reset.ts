@@ -1,8 +1,8 @@
 import { app } from 'electron';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
+import { WorldService } from './worlds';
 
 export interface ResetOptions {
   /** Если true — оставить миры (saves), настройки (settings.json), аккаунты (accounts.json). */
@@ -21,7 +21,11 @@ export interface ResetResult {
  * После выполнения приложение перезапускается (или закрывается, если перезапуск невозможен).
  */
 export class ResetService {
-  constructor(private launcherDir: string, private gameDir: string) {}
+  constructor(
+    private launcherDir: string,
+    private gameDir: string,
+    private worlds: WorldService,
+  ) {}
 
   setGameDir(dir: string) { this.gameDir = dir; }
 
@@ -61,19 +65,21 @@ export class ResetService {
       remove(path.join(this.gameDir, 'launcher_profiles.json'));
 
       // Legacy: ранние версии (rd-*, c0.*, alpha-classic) пишут в зависимости от ОС.
-      // Чистим все возможные места, чтобы старые миры тоже исчезали при полном сбросе.
+      // Чистим только наш локальный gameDir/.minecraft. Системные пути
+      // (%APPDATA%\.minecraft, ~/.minecraft) НЕ трогаем — там лежат данные
+      // официального лаунчера Mojang, и пользователь не ожидает что наш
+      // «сброс» уничтожит чужие миры.
       remove(path.join(this.gameDir, '.minecraft'));
-      const home = os.homedir();
-      if (process.platform === 'win32' && process.env.APPDATA) {
-        remove(path.join(process.env.APPDATA, '.minecraft', 'saves'));
-        // Не сносим всю %APPDATA%\.minecraft — там могут быть данные официального лаунчера
-      }
-      if (process.platform === 'darwin' && home) {
-        remove(path.join(home, 'Library', 'Application Support', 'minecraft', 'saves'));
-      }
-      if (home) {
-        remove(path.join(home, '.minecraft', 'saves'));
-      }
+
+      // Pre-Classic (rd-*, c0.*, in-*, inf-*, ранний alpha) хранит мир как
+      // одинокий `level.dat` прямо в корне APPDATA/.minecraft (или, при
+      // нашей подмене APPDATA→gameDir, прямо в gameDir). Папок saves/ у этих
+      // версий нет, поэтому remove(.../saves) не помогает — нужно отдельно
+      // прибить именно файлы level.dat*. wipeAllLooseLevelDat теперь тоже
+      // ходит только по нашим путям (см. WorldService).
+      try {
+        for (const file of this.worlds.wipeAllLooseLevelDat()) removed.push(file);
+      } catch {}
     }
 
     return { removed, keptUserData: opts.keepUserData };
